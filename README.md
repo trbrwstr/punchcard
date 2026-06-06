@@ -1,6 +1,6 @@
 # Punchcard
 
-Punchcard is an MVP workbench for reading legacy COBOL, building a small intermediate representation (IR), and preparing focused static/LLM-assisted reviews. Nu, the first lesson is very Jewish and very practical: **start with pshat**—the plain meaning of the text—before jumping to fancy drash.
+Punchcard is an workbench for reading legacy COBOL, building a small intermediate representation (IR), and preparing focused static/LLM-assisted reviews. 
 
 ## Setup
 
