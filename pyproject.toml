@@ -26,6 +26,7 @@ dev = [
 
 [project.scripts]
 punchcard = "punchcard.backend.main:main"
+punchcard-tui = "punchcard.tui.app:main"
 
 [build-system]
 requires = ["hatchling"]
