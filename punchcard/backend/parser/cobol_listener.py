@@ -30,6 +30,30 @@ _PROGRAM_ID_RE = re.compile(r"^\s*PROGRAM-ID\s*\.\s*([A-Z0-9_-]+)\s*\.?\s*$", re
 _IDENT_ENTRY_RE = re.compile(r"^\s*([A-Z][A-Z0-9-]*)\s*\.\s*(.*?)\s*\.?\s*$", re.IGNORECASE)
 _PARAGRAPH_RE = re.compile(r"^\s*([A-Z][A-Z0-9-]*)\s*\.\s*$", re.IGNORECASE)
 _COMMENT_MARKERS = ("*", "/")
+_STATEMENT_ONLY_WORDS = {
+    "ADD",
+    "CALL",
+    "CLOSE",
+    "COMPUTE",
+    "DISPLAY",
+    "DIVIDE",
+    "ELSE",
+    "END-EVALUATE",
+    "END-IF",
+    "EVALUATE",
+    "GOBACK",
+    "GO",
+    "IF",
+    "MOVE",
+    "MULTIPLY",
+    "OPEN",
+    "PERFORM",
+    "READ",
+    "STOP",
+    "SUBTRACT",
+    "WHEN",
+    "WRITE",
+}
 
 
 def parse_cobol(source: str) -> CobolProgram:
@@ -196,7 +220,7 @@ def _match_paragraph(line: str) -> str | None:
     if not match:
         return None
     name = match.group(1).upper()
-    return None if name in {"STOP", "EXIT"} else name
+    return None if name in _STATEMENT_ONLY_WORDS or name == "EXIT" else name
 
 
 def _statement_from_line(line: str, line_number: int) -> Statement:

@@ -1,3 +1,8 @@
+"""FastAPI adapters for Punchcard."""
+
+from punchcard.backend.api.sessions import create_app
+
+__all__ = ["create_app"]
 """FastAPI adapters for Punchcard rewrite sessions."""
 
 from __future__ import annotations
