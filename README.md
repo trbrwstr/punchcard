@@ -1,6 +1,6 @@
 # Punchcard
 
-Punchcard is an workbench for reading legacy COBOL, building a small intermediate representation (IR), and preparing focused static/LLM-assisted reviews. 
+Punchcard is a workbench for reading legacy COBOL, building a small intermediate representation (IR), and preparing focused static/LLM-assisted reviews. 
 
 ## Setup
 
