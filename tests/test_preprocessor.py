@@ -78,6 +78,32 @@ def test_missing_copybook_leaves_marker_then_raises_in_strict(tmp_path: Path) ->
         preprocess(source, copybook_paths=[tmp_path], strict=True)
 
 
+def test_copy_replacing_leaves_quoted_literals_untouched(tmp_path: Path) -> None:
+    _write(tmp_path / "REC.cpy", "       01 WS-X PIC X(4) VALUE 'WS-X'.\n")
+    source = PROGRAM_TEMPLATE.format(copy_line="       COPY REC REPLACING ==WS-X== BY ==WS-Y==.")
+
+    expanded = preprocess(source, copybook_paths=[tmp_path])
+
+    # The field name is replaced; the identical text inside the literal is not.
+    assert "WS-Y PIC X(4) VALUE 'WS-X'" in expanded
+
+
+def test_replacing_matches_across_whitespace_and_case() -> None:
+    source = (
+        "       REPLACE ==OLD VALUE== BY ==NEWVAL==.\n"
+        "       01 old\n"
+        "          value PIC X.\n"
+        "       REPLACE OFF.\n"
+    )
+
+    expanded = preprocess(source)
+
+    # "OLD VALUE" matched across the newline and lower case, collapsing to NEWVAL.
+    assert "NEWVAL PIC X" in expanded
+    assert "value" not in expanded
+    assert "REPLACE" not in expanded
+
+
 def test_replace_statement_applies_between_replace_off() -> None:
     source = (
         "       REPLACE ==FOO== BY ==BAR==.\n"

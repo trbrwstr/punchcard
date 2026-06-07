@@ -208,11 +208,19 @@ def _replace_area_edits(area: ParserRuleContext) -> list[tuple[int, int, str]]:
 def _replace_clauses(ctx: ParserRuleContext) -> list[tuple[str, str]]:
     clauses: list[tuple[str, str]] = []
     for clause in _find_all(ctx, "replaceClause"):
-        able = _pseudo_inner(_first(clause, "replaceable").getText())
-        replacement = _pseudo_inner(_first(clause, "replacement").getText())
+        # Use the raw source slice, not getText(): the latter concatenates tokens
+        # without whitespace, which would collapse multi-word pseudo-text.
+        able = _pseudo_inner(_ctx_source(_first(clause, "replaceable")))
+        replacement = _pseudo_inner(_ctx_source(_first(clause, "replacement")))
         if able:
             clauses.append((able, replacement))
     return clauses
+
+
+def _ctx_source(ctx: ParserRuleContext) -> str:
+    start = ctx.start
+    stop = ctx.stop or ctx.start
+    return start.getInputStream().getText(start.start, stop.stop)
 
 
 def _pseudo_inner(text: str) -> str:
@@ -222,14 +230,41 @@ def _pseudo_inner(text: str) -> str:
     return text.strip()
 
 
+#: A COBOL nonnumeric literal (single- or double-quoted, with doubled-quote escapes).
+_LITERAL_RE = re.compile(r"'(?:[^']|'')*'|\"(?:[^\"]|\"\")*\"")
+
+
 def _apply_clauses(text: str, clauses: Sequence[tuple[str, str]]) -> str:
+    """Apply REPLACING/REPLACE clauses as pseudo-text token-sequence substitution.
+
+    Matching is whitespace-flexible (a pseudo-text phrase matches across runs of
+    whitespace and newlines), case-insensitive on COBOL words, and bounded by
+    COBOL-word characters so partial words are not hit. String literals are left
+    untouched, since a quoted literal is a single token a pseudo-text phrase
+    cannot reach inside.
+    """
+
     for able, replacement in clauses:
         words = able.split()
         if not words:
             continue
-        pattern = r"(?<![A-Za-z0-9-])" + r"\s+".join(re.escape(word) for word in words) + r"(?![A-Za-z0-9-])"
-        text = re.sub(pattern, lambda _m, r=replacement: r, text)
+        pattern = re.compile(
+            r"(?<![A-Za-z0-9-])" + r"\s+".join(re.escape(word) for word in words) + r"(?![A-Za-z0-9-])",
+            re.IGNORECASE,
+        )
+        text = _sub_outside_literals(pattern, replacement, text)
     return text
+
+
+def _sub_outside_literals(pattern: re.Pattern[str], replacement: str, text: str) -> str:
+    chunks: list[str] = []
+    position = 0
+    for literal in _LITERAL_RE.finditer(text):
+        chunks.append(pattern.sub(lambda _m: replacement, text[position : literal.start()]))
+        chunks.append(literal.group(0))  # leave the literal verbatim
+        position = literal.end()
+    chunks.append(pattern.sub(lambda _m: replacement, text[position:]))
+    return "".join(chunks)
 
 
 # --- tree helpers ------------------------------------------------------------
