@@ -44,7 +44,7 @@ flowchart LR
 | `fixtures/` | Small COBOL examples for repeatable parser work. |
 | `tests/` | Pytest suite. |
 
-Like a beit midrash, the architecture keeps arguments close to sources: parser nodes retain line numbers, and review output should cite the code it discusses.
+the architecture keeps arguments close to sources: parser nodes retain line numbers, and review output should cite the code it discusses.
 
 ## Supported COBOL verbs in the line parser
 
@@ -67,4 +67,4 @@ The current parser records any procedure statement's first token as the verb. Th
 * Copybooks, dialect-specific syntax, and compiler directives are not expanded.
 * DATA DIVISION entries are retained as raw lines and section names, not typed data declarations.
 * PROCEDURE DIVISION nesting is shallow: sections, paragraphs, and one-line statements are captured, but no full control-flow graph exists yet.
-* Security posture for future API/LLM work: never send proprietary COBOL to an external model without explicit user approval, redaction policy, and audit logging. As Pirkei Avot might nudge us: build a fence around sensitive data.
+* Security posture for future API/LLM work: never send proprietary COBOL to an external model without explicit user approval, redaction policy, and audit logging.
