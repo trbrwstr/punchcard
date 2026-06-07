@@ -1,9 +1,10 @@
 # COBOL85 grammar
 
-`Cobol85.g4` is the COBOL85 grammar from the
+`Cobol85.g4` (the program grammar) and `Cobol85Preprocessor.g4` (the
+COPY/REPLACE preprocessor grammar) are from the
 [antlr/grammars-v4](https://github.com/antlr/grammars-v4/tree/master/cobol85)
 project (© 2017 Ulrich Wolffgang / proleap.io), distributed under the BSD
-3-clause license — see the copyright header inside the file.
+3-clause license — see the copyright header inside each file.
 
 The Python lexer/parser are generated from it into
 `punchcard/backend/parser/_generated/` and committed, so that runtime and CI need

@@ -20,11 +20,15 @@ curl -fsSL -o "${jar}" \
 
 echo "Generating Python lexer/parser/listener..."
 tmp_out="$(mktemp -d)"
-java -jar "${jar}" -Dlanguage=Python3 -o "${tmp_out}" \
-  -lib "${grammar_dir}" "${grammar_dir}/Cobol85.g4"
+for grammar in Cobol85.g4 Cobol85Preprocessor.g4; do
+  java -jar "${jar}" -Dlanguage=Python3 -o "${tmp_out}" \
+    -lib "${grammar_dir}" "${grammar_dir}/${grammar}"
+done
 
 # Keep only the runtime Python modules; drop .interp/.tokens build artifacts.
 cp "${tmp_out}"/Cobol85Lexer.py "${tmp_out}"/Cobol85Parser.py "${tmp_out}"/Cobol85Listener.py "${out_dir}/"
+cp "${tmp_out}"/Cobol85PreprocessorLexer.py "${tmp_out}"/Cobol85PreprocessorParser.py \
+   "${tmp_out}"/Cobol85PreprocessorListener.py "${out_dir}/"
 
 echo "Done. Generated modules refreshed in ${out_dir}."
 echo "Review the diff and run: uv run pytest"

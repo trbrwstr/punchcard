@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable
+from pathlib import Path
 
 from antlr4 import CommonTokenStream, InputStream, ParserRuleContext
 from antlr4.error.ErrorListener import ErrorListener
@@ -32,14 +33,22 @@ from punchcard.backend.parser.ir import (
     Section,
     Statement,
 )
+from punchcard.backend.parser.preprocessor import preprocess
 
 _TOKEN_RE = re.compile(r"[A-Za-z0-9_-]+")
 
 
-def parse_cobol(source: str) -> CobolProgram:
-    """Parse COBOL source text into Punchcard's review-oriented IR."""
+def parse_cobol(source: str, *, copybook_paths: Iterable[str | Path] = ()) -> CobolProgram:
+    """Parse COBOL source text into Punchcard's review-oriented IR.
 
-    lexer = Cobol85Lexer(InputStream(source))
+    ``COPY``/``REPLACE`` are expanded first (see
+    :func:`punchcard.backend.parser.preprocessor.preprocess`); copybooks are
+    resolved from ``copybook_paths``. Line numbers in the IR refer to the
+    expanded source, which is also what :attr:`CobolProgram.source` stores.
+    """
+
+    expanded = preprocess(source, copybook_paths=copybook_paths)
+    lexer = Cobol85Lexer(InputStream(expanded))
     lexer.removeErrorListeners()
     lexer.addErrorListener(_SilentErrorListener())
     parser = Cobol85Parser(CommonTokenStream(lexer))
@@ -47,13 +56,13 @@ def parse_cobol(source: str) -> CobolProgram:
     parser.addErrorListener(_SilentErrorListener())
 
     tree = parser.startRule()
-    source_lines = source.splitlines()
+    source_lines = expanded.splitlines()
     program_unit = _first(tree, "programUnit")
     if program_unit is None:
-        return CobolProgram(source=source)
+        return CobolProgram(source=expanded)
 
     return CobolProgram(
-        source=source,
+        source=expanded,
         identification=_identification(program_unit),
         environment=_environment(program_unit, source_lines),
         data=_data(program_unit, source_lines),
@@ -61,10 +70,10 @@ def parse_cobol(source: str) -> CobolProgram:
     )
 
 
-def parse_cobol_lines(lines: Iterable[str]) -> CobolProgram:
+def parse_cobol_lines(lines: Iterable[str], *, copybook_paths: Iterable[str | Path] = ()) -> CobolProgram:
     """Parse COBOL source lines into a :class:`CobolProgram`."""
 
-    return parse_cobol("\n".join(line.rstrip("\n") for line in lines))
+    return parse_cobol("\n".join(line.rstrip("\n") for line in lines), copybook_paths=copybook_paths)
 
 
 class _SilentErrorListener(ErrorListener):
