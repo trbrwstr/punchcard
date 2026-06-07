@@ -8,6 +8,10 @@ FIXTURE_PATHS = [
     Path("fixtures/report_generation.cbl"),
 ]
 
+# The ANTLR parser produces a structured tree: ELSE/END-IF/WHEN are parts of
+# IF/EVALUATE blocks, not standalone statements, so they are not "verbs". The
+# statements they guard are reachable via Statement.children (flattened by
+# CobolProgram.all_statements).
 REQUIRED_VERBS = {
     "MOVE",
     "ADD",
@@ -16,11 +20,8 @@ REQUIRED_VERBS = {
     "DIVIDE",
     "COMPUTE",
     "IF",
-    "ELSE",
-    "END-IF",
     "PERFORM",
     "EVALUATE",
-    "WHEN",
     "CALL",
     "READ",
     "WRITE",
@@ -62,3 +63,18 @@ def test_parser_ir_construction_keeps_sections_paragraphs_and_line_numbers() -> 
     ]
     assert any(statement.verb == "CALL" and "AUDITPAY" in statement.text for statement in program.all_statements)
     assert all(statement.line_number > 0 for statement in program.all_statements)
+
+
+def test_block_statements_nest_their_children() -> None:
+    program = _program_for(Path("fixtures/payroll.cbl"))
+
+    calculate_pay = next(p for p in program.procedure.paragraphs if p.name == "CALCULATE-PAY")
+    if_statement = next(s for s in calculate_pay.statements if s.verb == "IF")
+
+    # The IF body is captured as nested children, not as sibling statements.
+    assert if_statement.children
+    child_verbs = {child.verb for child in if_statement.children}
+    assert "CALL" in child_verbs
+    assert if_statement.end_line is not None and if_statement.end_line > if_statement.line_number
+    # The nested CALL is therefore not a top-level statement of the paragraph.
+    assert "CALL" not in {s.verb for s in calculate_pay.statements}
