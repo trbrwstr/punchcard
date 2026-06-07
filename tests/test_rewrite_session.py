@@ -1,5 +1,5 @@
-from argparse import Namespace
 import json
+from argparse import Namespace
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -7,7 +7,6 @@ from fastapi.testclient import TestClient
 from punchcard.backend.api import create_app
 from punchcard.backend.review import RewriteSessionService
 from punchcard.tui.app import build_session
-
 
 SOURCE = Path("fixtures/hello.cbl").read_text(encoding="utf-8")
 

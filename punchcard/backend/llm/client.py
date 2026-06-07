@@ -16,7 +16,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from punchcard.backend.llm.prompts import SYSTEM_PROMPT, USER_PROMPT_TEMPLATE
 
-ANTHROPIC_TRANSLATION_MODEL = "claude-sonnet-4-20250514"
+ANTHROPIC_TRANSLATION_MODEL = "claude-opus-4-8"
 DEFAULT_MAX_TOKENS = 4096
 
 
@@ -119,10 +119,15 @@ class AnthropicTranslationClient:
             ),
         )
 
+        # Adaptive thinking lets the current Opus models decide how much to
+        # reason per paragraph without a fixed token budget. The 4096-token
+        # default stays well under the streaming threshold, so a plain
+        # (non-streaming) request is safe here.
         response = self._messages_client.create(
             model=self.model,
             max_tokens=self.settings.max_tokens,
             system=SYSTEM_PROMPT,
+            thinking={"type": "adaptive"},
             messages=[{"role": "user", "content": user_prompt}],
         )
 

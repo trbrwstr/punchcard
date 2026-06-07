@@ -18,14 +18,16 @@ from pathlib import Path
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import Column, Text
 from sqlmodel import Field as SQLField
 from sqlmodel import Session, SQLModel, create_engine, select
 
 from punchcard.backend.llm import get_llm_client
+from punchcard.backend.llm.confidence import score_paragraph
 from punchcard.backend.parser.cobol_listener import parse_cobol
-from punchcard.backend.parser.ir import CobolProgram, Paragraph
+from punchcard.backend.parser.ir import CobolProgram, DataDiv, Paragraph
 
 ALLOWED_EXTENSIONS = {".cbl", ".cob"}
 MAX_UPLOAD_BYTES = 2 * 1024 * 1024
@@ -196,9 +198,10 @@ def create_session(
             session_id=session.id,
             name=name,
             source=source,
+            confidence_score=confidence,
             risk_flags_json=json.dumps(risk_flags),
         )
-        for name, source, risk_flags in _paragraph_payloads(program)
+        for name, source, confidence, risk_flags in _paragraph_payloads(program)
     ]
     for paragraph in paragraphs:
         db.add(paragraph)
@@ -263,9 +266,11 @@ def translate_paragraph(session_id: str, name: str, db: Annotated[Session, Depen
     paragraph = _get_paragraph_or_404(db, session_id, name)
     result = get_llm_client().translate_paragraph(name=paragraph.name, source=paragraph.source)
     merged_risks = sorted(set(_json_list(paragraph.risk_flags_json)).union(result.risk_flags))
+    # Confidence is the structural score computed at session creation; the
+    # translator may add risk flags but does not move the heuristic score.
+    confidence = paragraph.confidence_score if paragraph.confidence_score is not None else 0.0
 
     paragraph.translated_text = result.translated_text
-    paragraph.confidence_score = result.confidence_score
     paragraph.risk_flags_json = json.dumps(merged_risks)
     paragraph.status = "TRANSLATED"
     paragraph.updated_at = _utcnow()
@@ -275,7 +280,7 @@ def translate_paragraph(session_id: str, name: str, db: Annotated[Session, Depen
         session_id,
         "TRANSLATED",
         paragraph_name=paragraph.name,
-        detail={"confidence_score": result.confidence_score, "risk_flags": merged_risks},
+        detail={"confidence_score": confidence, "risk_flags": merged_risks},
     )
     db.add(paragraph)
     db.commit()
@@ -285,7 +290,7 @@ def translate_paragraph(session_id: str, name: str, db: Annotated[Session, Depen
         paragraph_name=paragraph.name,
         status=paragraph.status,
         translated_text=result.translated_text,
-        confidence_score=result.confidence_score,
+        confidence_score=confidence,
         risk_flags=merged_risks,
     )
 
@@ -341,6 +346,23 @@ def export_session(session_id: str, db: Annotated[Session, Depends(get_db)]) -> 
     )
 
 
+@router.get(
+    "/sessions/{session_id}/export/file",
+    response_class=PlainTextResponse,
+    responses={404: {"model": ErrorResponse}},
+)
+def export_session_file(session_id: str, db: Annotated[Session, Depends(get_db)]) -> PlainTextResponse:
+    """Return the assembled translated module as a single downloadable file."""
+
+    session = _get_session_or_404(db, session_id)
+    paragraphs = list(_session_paragraphs(db, session_id))
+    filename = _module_filename(session.filename)
+    return PlainTextResponse(
+        content=_assemble_module(session.filename, paragraphs),
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 def init_db() -> None:
     """Create SQLite tables for the API layer."""
 
@@ -384,19 +406,24 @@ def _read_upload_text(file: UploadFile) -> str:
         ) from exc
 
 
-def _paragraph_payloads(program: CobolProgram) -> list[tuple[str, str, list[str]]]:
+def _paragraph_payloads(program: CobolProgram) -> list[tuple[str, str, float, list[str]]]:
     seen: dict[str, int] = {}
-    payloads: list[tuple[str, str, list[str]]] = []
+    payloads: list[tuple[str, str, float, list[str]]] = []
     for paragraph in _iter_ir_paragraphs(program):
         name = _unique_name(paragraph.name, seen)
         source = "\n".join(statement.text for statement in paragraph.statements)
-        payloads.append((name, source, _risk_flags(paragraph)))
+        confidence, risk_flags = _score(paragraph, program.data)
+        payloads.append((name, source, confidence, risk_flags))
 
     if payloads:
         return payloads
 
+    synthetic = Paragraph(name="PROGRAM", line_number=1, statements=tuple(program.all_statements))
     source = "\n".join(statement.text for statement in program.all_statements).strip() or program.source.strip()
-    return [("PROGRAM", source, ["NO_PARAGRAPHS"])]
+    confidence, risk_flags = _score(synthetic, program.data)
+    if not program.all_statements:
+        risk_flags = sorted({*risk_flags, "NO_PARAGRAPHS"})
+    return [("PROGRAM", source, confidence, risk_flags)]
 
 
 def _iter_ir_paragraphs(program: CobolProgram) -> Iterable[Paragraph]:
@@ -411,20 +438,17 @@ def _unique_name(name: str, seen: dict[str, int]) -> str:
     return name if count == 1 else f"{name}-{count}"
 
 
-def _risk_flags(paragraph: Paragraph) -> list[str]:
-    verbs = {statement.verb.upper() for statement in paragraph.statements}
-    flags: list[str] = []
-    if not verbs:
-        flags.append("EMPTY_PARAGRAPH")
-    if verbs.intersection({"CALL"}):
-        flags.append("EXTERNAL_CALL")
-    if verbs.intersection({"READ", "WRITE", "OPEN", "CLOSE"}):
-        flags.append("FILE_IO")
-    if verbs.intersection({"GO", "GOTO", "ALTER"}):
-        flags.append("CONTROL_FLOW")
-    if any("SQL" in statement.tokens for statement in paragraph.statements):
-        flags.append("EMBEDDED_SQL")
-    return flags
+def _score(paragraph: Paragraph, data_div: DataDiv) -> tuple[float, list[str]]:
+    """Score a paragraph and return its confidence plus deduplicated risk flags.
+
+    ``score_paragraph`` emits one flag per offending statement (so two ``GO TO``s
+    yield two ``GO_TO`` flags); the API surfaces a stable, order-preserving,
+    deduplicated set.
+    """
+
+    result = score_paragraph(paragraph, data_div)
+    deduped = list(dict.fromkeys(result.risk_flags))
+    return result.score, deduped
 
 
 def _get_session_or_404(db: Session, session_id: str) -> RewriteSession:
@@ -506,6 +530,38 @@ def _export_text(paragraph: ParagraphRewrite) -> str:
     header = f"# Paragraph: {paragraph.name} [{paragraph.status}]"
     body = paragraph.translated_text if paragraph.translated_text else f"# Untranslated COBOL\n{paragraph.source}"
     return f"{header}\n{body}"
+
+
+def _module_filename(source_filename: str) -> str:
+    """Derive a Python module filename from the uploaded COBOL filename."""
+
+    stem = Path(source_filename).stem or "translation"
+    return f"{stem}.py"
+
+
+def _assemble_module(source_filename: str, paragraphs: list[ParagraphRewrite]) -> str:
+    """Assemble a single reviewable module from a session's paragraphs.
+
+    Translated paragraphs are emitted as code; anything still untranslated is
+    kept as commented COBOL so the output is always a valid, auditable artifact.
+    """
+
+    lines = [
+        f'"""Translated from {source_filename} by Punchcard.',
+        "",
+        "Review every paragraph before shipping. Paragraphs that were not",
+        'translated are preserved below as commented COBOL source."""',
+        "",
+    ]
+    for paragraph in paragraphs:
+        lines.append(f"# --- {paragraph.name} [{paragraph.status}] ---")
+        if paragraph.translated_text:
+            lines.append(paragraph.translated_text.rstrip())
+        else:
+            lines.append(f"# Untranslated COBOL paragraph {paragraph.name}:")
+            lines.extend(f"# {cobol_line}" for cobol_line in paragraph.source.splitlines())
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
 
 
 def _add_audit_event(

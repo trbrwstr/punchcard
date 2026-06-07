@@ -2,11 +2,15 @@
 
 The API depends on this tiny abstraction instead of a vendor SDK directly. That
 keeps the current MVP safe and testable while leaving a clean seam for a real
-provider later, when users explicitly approve sending legacy code off-box.
+provider. ``get_llm_client`` returns the offline :class:`MockLLMClient` unless an
+``ANTHROPIC_API_KEY`` is configured and the process is not under test — only then
+does proprietary COBOL leave the box, and only because someone deliberately set
+the key.
 """
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -18,16 +22,22 @@ from punchcard.backend.llm.client import (
     TokenUsage,
 )
 from punchcard.backend.llm.prompts import SYSTEM_PROMPT, USER_PROMPT_TEMPLATE
+from punchcard.backend.parser.complexity import complexity_for_source
 
-AnthropicLLMClient = AnthropicTranslationClient
+DEFAULT_TARGET_LANGUAGE = "Python"
 
 
 @dataclass(frozen=True, slots=True)
 class TranslationResult:
-    """Normalized result returned by any paragraph translation client."""
+    """Normalized result returned by any paragraph translation client.
+
+    Structural confidence is owned by the review layer (see
+    :func:`punchcard.backend.llm.confidence.score_paragraph`), so a translation
+    result carries only the produced code and any flags the translator wants to
+    attach to it.
+    """
 
     translated_text: str
-    confidence_score: float
     risk_flags: tuple[str, ...] = ()
 
 
@@ -43,7 +53,7 @@ class MockLLMClient:
 
     This intentionally does not call the network. In cybersecurity terms, it is
     the MVP's fence around proprietary COBOL: no source leaves the process unless
-    a future client is deliberately plugged in.
+    a real client is deliberately plugged in.
     """
 
     def translate_paragraph(self, *, name: str, source: str) -> TranslationResult:
@@ -57,17 +67,61 @@ class MockLLMClient:
             f"{_indent_as_comment(body)}\n"
             "    return context"
         )
-        return TranslationResult(translated_text=translated, confidence_score=0.72, risk_flags=("MOCK_TRANSLATION",))
+        return TranslationResult(translated_text=translated, risk_flags=("MOCK_TRANSLATION",))
 
 
-def get_llm_client() -> LLMClient:
-    """Return the configured LLM client.
+class AnthropicLLMClient:
+    """Adapt :class:`AnthropicTranslationClient` to the ``(name, source)`` contract.
 
-    The first implementation is mocked by design. A real client can be selected
-    here later from settings without changing API handlers.
+    The route layer only knows a paragraph's name and source text, so this
+    adapter fills in the richer prompt inputs the real client expects: a target
+    language, a cyclomatic complexity estimate, and a suggested function name.
     """
 
-    return MockLLMClient()
+    def __init__(
+        self,
+        *,
+        client: AnthropicTranslationClient | None = None,
+        settings: LLMSettings | None = None,
+        target_language: str = DEFAULT_TARGET_LANGUAGE,
+    ) -> None:
+        self._client = client or AnthropicTranslationClient(settings=settings)
+        self.target_language = target_language
+
+    def translate_paragraph(self, *, name: str, source: str) -> TranslationResult:
+        result = self._client.translate_paragraph(
+            target_language=self.target_language,
+            paragraph_name=name,
+            cobol_source=source,
+            complexity_score=complexity_for_source(source),
+            suggested_function_name=suggested_function_name(name),
+        )
+        return TranslationResult(translated_text=result.translated_code, risk_flags=("LLM_TRANSLATION",))
+
+
+def get_llm_client(settings: LLMSettings | None = None) -> LLMClient:
+    """Return the configured LLM client.
+
+    Falls back to the offline :class:`MockLLMClient` whenever real calls are
+    blocked (tests) or no API key is present, so CI and local runs never touch
+    the network by accident.
+    """
+
+    settings = settings or LLMSettings()
+    if settings.blocks_real_api_calls or settings.anthropic_api_key is None:
+        return MockLLMClient()
+    return AnthropicLLMClient(settings=settings)
+
+
+def suggested_function_name(paragraph_name: str) -> str:
+    """Derive a snake_case function name from a COBOL paragraph name."""
+
+    cleaned = re.sub(r"[^0-9a-zA-Z]+", "_", paragraph_name.strip().lower()).strip("_")
+    if not cleaned:
+        return "run"
+    if cleaned[0].isdigit():
+        cleaned = f"p_{cleaned}"
+    return cleaned
 
 
 def _indent_as_comment(text: str) -> str:
@@ -76,9 +130,12 @@ def _indent_as_comment(text: str) -> str:
     return "\n".join(f"    # {line}" for line in text.splitlines())
 
 
+AnthropicLLMTranslationClient = AnthropicTranslationClient
+
 __all__ = [
     "ANTHROPIC_TRANSLATION_MODEL",
     "AnthropicLLMClient",
+    "AnthropicLLMTranslationClient",
     "AnthropicTranslationClient",
     "LLMClient",
     "LLMClientError",
@@ -89,4 +146,5 @@ __all__ = [
     "TranslationResult",
     "USER_PROMPT_TEMPLATE",
     "get_llm_client",
+    "suggested_function_name",
 ]

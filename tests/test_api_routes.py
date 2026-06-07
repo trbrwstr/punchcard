@@ -65,6 +65,33 @@ def test_reject_logs_audit_event_without_translation(tmp_path, monkeypatch) -> N
         assert export["audit_log"][-1]["event_type"] == "REJECTED"
 
 
+def test_confidence_is_structural_and_export_file_is_downloadable(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("PUNCHCARD_DATABASE_URL", f"sqlite:///{tmp_path / 'punchcard.sqlite3'}")
+    routes._engine = None
+
+    with TestClient(create_app()) as client:
+        source = Path("fixtures/hello.cbl").read_text(encoding="utf-8")
+        session_id = client.post(
+            "/sessions",
+            files={"file": ("hello.cbl", source.encode("utf-8"), "text/plain")},
+        ).json()["id"]
+
+        # Confidence comes from the structural scorer at creation, not the mock.
+        paragraph = client.get(f"/sessions/{session_id}/paragraphs").json()["paragraphs"][0]
+        assert paragraph["confidence_score"] == 1.0
+        assert paragraph["risk_flags"] == []
+
+        translate = client.post(f"/sessions/{session_id}/paragraphs/MAIN-PARA/translate").json()
+        assert translate["confidence_score"] == 1.0  # unchanged by translation
+
+        response = client.get(f"/sessions/{session_id}/export/file")
+        assert response.status_code == 200
+        assert response.headers["content-disposition"] == 'attachment; filename="hello.py"'
+        assert "Translated from hello.cbl" in response.text
+        assert "# --- MAIN-PARA [TRANSLATED] ---" in response.text
+        assert "Proposed Python rewrite" in response.text
+
+
 def test_upload_rejects_non_cobol_extension(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("PUNCHCARD_DATABASE_URL", f"sqlite:///{tmp_path / 'punchcard.sqlite3'}")
     routes._engine = None

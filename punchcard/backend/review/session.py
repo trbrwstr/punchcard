@@ -116,7 +116,11 @@ class RewriteSessionService:
             raise ValueError("session JSON must contain either 'source' or an 'items' list")
 
         items = [_item_from_mapping(raw_item) for raw_item in payload["items"]]
-        session = RewriteSession(id=str(payload.get("id") or uuid4().hex), items=items, cursor=int(payload.get("cursor", 0)))
+        session = RewriteSession(
+            id=str(payload.get("id") or uuid4().hex),
+            items=items,
+            cursor=int(payload.get("cursor", 0)),
+        )
         self._sessions[session.id] = session
         return session
 

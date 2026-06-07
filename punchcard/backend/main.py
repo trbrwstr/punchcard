@@ -9,7 +9,8 @@ from pathlib import Path
 from fastapi import FastAPI
 from rich.console import Console
 
-from punchcard.backend.api.routes import init_db, router as api_router
+from punchcard.backend.api.routes import init_db
+from punchcard.backend.api.routes import router as api_router
 from punchcard.backend.parser.cobol_listener import parse_cobol
 
 console = Console()

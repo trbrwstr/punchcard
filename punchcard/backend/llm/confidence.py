@@ -12,7 +12,6 @@ from typing import Final, NamedTuple
 
 from punchcard.backend.parser.ir import DataDiv, Paragraph, Statement
 
-
 BASE_SCORE: Final = 1.0
 MANDATORY_REVIEW_THRESHOLD: Final = 0.6
 
