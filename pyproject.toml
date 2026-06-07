@@ -45,6 +45,7 @@ pythonpath = ["."]
 [tool.ruff]
 line-length = 120
 target-version = "py312"
+extend-exclude = ["punchcard/backend/parser/_generated"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]

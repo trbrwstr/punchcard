@@ -1,18 +1,27 @@
-"""Minimal COBOL parser entry point.
+"""COBOL parser entry point backed by an ANTLR4 COBOL85 grammar.
 
-This module deliberately starts with a conservative line-based parser. The name
-is ANTLR-friendly so a generated listener can later feed the same IR without
-changing callers. For now, the parser favors traceability and safe failure over
-clever inference: unknown lines are preserved as statements when they appear in
-PROCEDURE DIVISION and as raw text elsewhere.
+The parser uses the vendored ANTLR-generated lexer/parser in ``_generated`` (built
+from ``grammar/Cobol85.g4``) and walks the resulting parse tree into Punchcard's
+small IR. The walk is deliberately shallow: it captures divisions, the section
+names reviewers cite, paragraphs, and statements — with block statements
+(``IF``/``EVALUATE``/inline ``PERFORM``) carrying their nested statements as
+``Statement.children`` so the structure is preserved without modeling a full
+control-flow graph.
+
+Parsing is best-effort: ANTLR's error recovery still yields a tree on malformed
+input, and the walk simply captures whatever it produced.
 """
 
 from __future__ import annotations
 
 import re
 from collections.abc import Iterable
-from dataclasses import replace
 
+from antlr4 import CommonTokenStream, InputStream, ParserRuleContext
+from antlr4.error.ErrorListener import ErrorListener
+
+from punchcard.backend.parser._generated.Cobol85Lexer import Cobol85Lexer
+from punchcard.backend.parser._generated.Cobol85Parser import Cobol85Parser
 from punchcard.backend.parser.ir import (
     CobolProgram,
     DataDiv,
@@ -24,50 +33,32 @@ from punchcard.backend.parser.ir import (
     Statement,
 )
 
-_DIVISION_RE = re.compile(r"^\s*([A-Z][A-Z0-9-]*)\s+DIVISION\s*\.?\s*$", re.IGNORECASE)
-_SECTION_RE = re.compile(r"^\s*([A-Z][A-Z0-9-]*)\s+SECTION\s*\.?\s*$", re.IGNORECASE)
-_PROGRAM_ID_RE = re.compile(r"^\s*PROGRAM-ID\s*\.\s*([A-Z0-9_-]+)\s*\.?\s*$", re.IGNORECASE)
-_IDENT_ENTRY_RE = re.compile(r"^\s*([A-Z][A-Z0-9-]*)\s*\.\s*(.*?)\s*\.?\s*$", re.IGNORECASE)
-_PARAGRAPH_RE = re.compile(r"^\s*([A-Z][A-Z0-9-]*)\s*\.\s*$", re.IGNORECASE)
-_COMMENT_MARKERS = ("*", "/")
-_STATEMENT_ONLY_WORDS = {
-    "ADD",
-    "CALL",
-    "CLOSE",
-    "COMPUTE",
-    "DISPLAY",
-    "DIVIDE",
-    "ELSE",
-    "END-EVALUATE",
-    "END-IF",
-    "EVALUATE",
-    "GOBACK",
-    "GO",
-    "IF",
-    "MOVE",
-    "MULTIPLY",
-    "OPEN",
-    "PERFORM",
-    "READ",
-    "STOP",
-    "SUBTRACT",
-    "WHEN",
-    "WRITE",
-}
+_TOKEN_RE = re.compile(r"[A-Za-z0-9_-]+")
 
 
 def parse_cobol(source: str) -> CobolProgram:
-    """Parse COBOL source text into a small, review-oriented IR.
+    """Parse COBOL source text into Punchcard's review-oriented IR."""
 
-    Args:
-        source: COBOL source as text.
+    lexer = Cobol85Lexer(InputStream(source))
+    lexer.removeErrorListeners()
+    lexer.addErrorListener(_SilentErrorListener())
+    parser = Cobol85Parser(CommonTokenStream(lexer))
+    parser.removeErrorListeners()
+    parser.addErrorListener(_SilentErrorListener())
 
-    Returns:
-        A :class:`CobolProgram` with divisions and procedure statements.
-    """
+    tree = parser.startRule()
+    source_lines = source.splitlines()
+    program_unit = _first(tree, "programUnit")
+    if program_unit is None:
+        return CobolProgram(source=source)
 
-    parser = _LineCobolParser(source)
-    return parser.parse()
+    return CobolProgram(
+        source=source,
+        identification=_identification(program_unit),
+        environment=_environment(program_unit, source_lines),
+        data=_data(program_unit, source_lines),
+        procedure=_procedure(program_unit),
+    )
 
 
 def parse_cobol_lines(lines: Iterable[str]) -> CobolProgram:
@@ -76,171 +67,179 @@ def parse_cobol_lines(lines: Iterable[str]) -> CobolProgram:
     return parse_cobol("\n".join(line.rstrip("\n") for line in lines))
 
 
-class _LineCobolParser:
-    """Small state machine for the first parser milestone."""
+class _SilentErrorListener(ErrorListener):
+    """Swallow syntax errors so parsing stays best-effort and side-effect free."""
 
-    def __init__(self, source: str) -> None:
-        self.source = source
-        self.ident_entries: dict[str, str] = {}
-        self.program_id: str | None = None
-        self.environment_lines: list[str] = []
-        self.data_lines: list[str] = []
-        self.environment_sections: list[Section] = []
-        self.data_sections: list[Section] = []
-        self.procedure_sections: list[Section] = []
-        self.procedure_paragraphs: list[Paragraph] = []
-        self.procedure_statements: list[Statement] = []
-        self._current_division: str | None = None
-        self._current_section: Section | None = None
-        self._current_paragraph: Paragraph | None = None
-
-    def parse(self) -> CobolProgram:
-        for line_number, raw_line in enumerate(self.source.splitlines(), start=1):
-            line = _strip_sequence_area(raw_line).rstrip()
-            if not line or _is_comment(line):
-                continue
-
-            division = _match_division(line)
-            if division:
-                self._start_division(division)
-                continue
-
-            if self._current_division == "IDENTIFICATION":
-                self._parse_identification(line)
-            elif self._current_division == "ENVIRONMENT":
-                self._parse_non_procedure_line(line, line_number, self.environment_lines, self.environment_sections)
-            elif self._current_division == "DATA":
-                self._parse_non_procedure_line(line, line_number, self.data_lines, self.data_sections)
-            elif self._current_division == "PROCEDURE":
-                self._parse_procedure_line(line, line_number)
-
-        return CobolProgram(
-            source=self.source,
-            identification=IdentificationDiv(program_id=self.program_id, entries=dict(self.ident_entries)),
-            environment=EnvironmentDiv(sections=tuple(self.environment_sections), lines=tuple(self.environment_lines)),
-            data=DataDiv(sections=tuple(self.data_sections), lines=tuple(self.data_lines)),
-            procedure=ProcedureDiv(
-                sections=tuple(self.procedure_sections),
-                paragraphs=tuple(self.procedure_paragraphs),
-                statements=tuple(self.procedure_statements),
-            ),
-        )
-
-    def _start_division(self, division: str) -> None:
-        self._current_division = division
-        self._current_section = None
-        self._current_paragraph = None
-
-    def _parse_identification(self, line: str) -> None:
-        program_id_match = _PROGRAM_ID_RE.match(line)
-        if program_id_match:
-            self.program_id = program_id_match.group(1).upper()
-            self.ident_entries["PROGRAM-ID"] = self.program_id
-            return
-
-        entry_match = _IDENT_ENTRY_RE.match(line)
-        if entry_match:
-            key = entry_match.group(1).upper()
-            value = entry_match.group(2).strip()
-            if value:
-                self.ident_entries[key] = value
-
-    def _parse_non_procedure_line(
-        self,
-        line: str,
-        line_number: int,
-        raw_lines: list[str],
-        sections: list[Section],
-    ) -> None:
-        raw_lines.append(line)
-        section_name = _match_section(line)
-        if section_name:
-            sections.append(Section(name=section_name, line_number=line_number))
-
-    def _parse_procedure_line(self, line: str, line_number: int) -> None:
-        section_name = _match_section(line)
-        if section_name:
-            section = Section(name=section_name, line_number=line_number)
-            self.procedure_sections.append(section)
-            self._current_section = section
-            self._current_paragraph = None
-            return
-
-        paragraph_name = _match_paragraph(line)
-        if paragraph_name:
-            paragraph = Paragraph(name=paragraph_name, line_number=line_number)
-            if self._current_section is None:
-                self.procedure_paragraphs.append(paragraph)
-            else:
-                self._current_section = _append_paragraph(self._current_section, paragraph)
-                self.procedure_sections[-1] = self._current_section
-            self._current_paragraph = paragraph
-            return
-
-        statement = _statement_from_line(line, line_number)
-        if self._current_paragraph is not None:
-            self._current_paragraph = _append_statement_to_paragraph(self._current_paragraph, statement)
-            if self._current_section is None:
-                self.procedure_paragraphs[-1] = self._current_paragraph
-            else:
-                self._current_section = _replace_last_paragraph(self._current_section, self._current_paragraph)
-                self.procedure_sections[-1] = self._current_section
-        elif self._current_section is not None:
-            self._current_section = _append_statement_to_section(self._current_section, statement)
-            self.procedure_sections[-1] = self._current_section
-        else:
-            self.procedure_statements.append(statement)
-
-
-def _strip_sequence_area(line: str) -> str:
-    """Remove fixed-format sequence columns when they look present."""
-
-    if len(line) >= 7 and line[:6].strip().isdigit():
-        return line[6:]
-    return line
-
-
-def _is_comment(line: str) -> bool:
-    stripped = line.lstrip()
-    return bool(stripped) and stripped[0] in _COMMENT_MARKERS
-
-
-def _match_division(line: str) -> str | None:
-    match = _DIVISION_RE.match(line)
-    return match.group(1).upper() if match else None
-
-
-def _match_section(line: str) -> str | None:
-    match = _SECTION_RE.match(line)
-    return match.group(1).upper() if match else None
-
-
-def _match_paragraph(line: str) -> str | None:
-    match = _PARAGRAPH_RE.match(line)
-    if not match:
+    def syntaxError(self, recognizer, offendingSymbol, line, column, msg, e) -> None:  # noqa: N802
         return None
-    name = match.group(1).upper()
-    return None if name in _STATEMENT_ONLY_WORDS or name == "EXIT" else name
 
 
-def _statement_from_line(line: str, line_number: int) -> Statement:
-    normalized = line.strip().rstrip(".").strip()
-    tokens = tuple(part.upper() for part in re.findall(r"[A-Z0-9_-]+", normalized, flags=re.IGNORECASE))
-    verb = tokens[0] if tokens else "UNKNOWN"
-    return Statement(verb=verb, text=normalized, line_number=line_number, tokens=tokens)
+# --- division builders -------------------------------------------------------
 
 
-def _append_statement_to_paragraph(paragraph: Paragraph, statement: Statement) -> Paragraph:
-    return replace(paragraph, statements=(*paragraph.statements, statement))
+def _identification(program_unit: ParserRuleContext) -> IdentificationDiv:
+    paragraph = _first(program_unit, "programIdParagraph")
+    if paragraph is None:
+        return IdentificationDiv()
+    name_ctx = _first(paragraph, "programName")
+    if name_ctx is None:
+        return IdentificationDiv()
+    name = _ctx_text(name_ctx).strip().strip("\"'").upper()
+    return IdentificationDiv(program_id=name, entries={"PROGRAM-ID": name})
 
 
-def _append_statement_to_section(section: Section, statement: Statement) -> Section:
-    return replace(section, statements=(*section.statements, statement))
+def _environment(program_unit: ParserRuleContext, source_lines: list[str]) -> EnvironmentDiv:
+    division = _first(program_unit, "environmentDivision")
+    if division is None:
+        return EnvironmentDiv()
+    return EnvironmentDiv(
+        sections=_section_names(division),
+        lines=_division_lines(division, source_lines),
+    )
 
 
-def _append_paragraph(section: Section, paragraph: Paragraph) -> Section:
-    return replace(section, paragraphs=(*section.paragraphs, paragraph))
+def _data(program_unit: ParserRuleContext, source_lines: list[str]) -> DataDiv:
+    division = _first(program_unit, "dataDivision")
+    if division is None:
+        return DataDiv()
+    return DataDiv(
+        sections=_section_names(division),
+        lines=_division_lines(division, source_lines),
+    )
 
 
-def _replace_last_paragraph(section: Section, paragraph: Paragraph) -> Section:
-    return replace(section, paragraphs=(*section.paragraphs[:-1], paragraph))
+def _procedure(program_unit: ParserRuleContext) -> ProcedureDiv:
+    division = _first(program_unit, "procedureDivision")
+    if division is None:
+        return ProcedureDiv()
+    body = _first(division, "procedureDivisionBody")
+    if body is None:
+        return ProcedureDiv()
+
+    paragraphs = tuple(_build_paragraph(p) for p in _loose_paragraphs(body))
+    sections = tuple(
+        Section(
+            name=_section_header_name(section),
+            line_number=section.start.line,
+            paragraphs=tuple(_build_paragraph(p) for p in _loose_paragraphs(section)),
+        )
+        for section in _children_named(body, "procedureSection")
+    )
+    return ProcedureDiv(paragraphs=paragraphs, sections=sections)
+
+
+# --- paragraph / statement builders -----------------------------------------
+
+
+def _build_paragraph(paragraph_ctx: ParserRuleContext) -> Paragraph:
+    name_ctx = _first(paragraph_ctx, "paragraphName")
+    name = (name_ctx.start.text if name_ctx is not None else paragraph_ctx.start.text).upper()
+    statements: list[Statement] = []
+    for sentence in _children_named(paragraph_ctx, "sentence"):
+        for statement_ctx in _children_named(sentence, "statement"):
+            statements.append(_build_statement(statement_ctx))
+    return Paragraph(name=name, line_number=paragraph_ctx.start.line, statements=tuple(statements))
+
+
+def _build_statement(statement_ctx: ParserRuleContext) -> Statement:
+    text = " ".join(_ctx_text(statement_ctx).split())
+    children = tuple(_build_statement(child) for child in _nested_statements(statement_ctx))
+    stop = statement_ctx.stop or statement_ctx.start
+    return Statement(
+        verb=statement_ctx.start.text.upper(),
+        text=text,
+        line_number=statement_ctx.start.line,
+        tokens=tuple(match.group(0).upper() for match in _TOKEN_RE.finditer(text)),
+        children=children,
+        end_line=stop.line,
+    )
+
+
+# --- tree helpers ------------------------------------------------------------
+
+
+def _rule_name(ctx: ParserRuleContext) -> str:
+    name = type(ctx).__name__[:-7]  # strip "Context"
+    return name[0].lower() + name[1:]
+
+
+def _rule_children(ctx: ParserRuleContext) -> list[ParserRuleContext]:
+    return [child for child in ctx.getChildren() if isinstance(child, ParserRuleContext)]
+
+
+def _children_named(ctx: ParserRuleContext, name: str) -> list[ParserRuleContext]:
+    """Return descendants with the given rule name, not descending past a match."""
+
+    found: list[ParserRuleContext] = []
+
+    def visit(node: ParserRuleContext) -> None:
+        for child in _rule_children(node):
+            if _rule_name(child) == name:
+                found.append(child)
+            else:
+                visit(child)
+
+    visit(ctx)
+    return found
+
+
+def _first(ctx: ParserRuleContext, name: str) -> ParserRuleContext | None:
+    matches = _children_named(ctx, name)
+    return matches[0] if matches else None
+
+
+def _nested_statements(statement_ctx: ParserRuleContext) -> list[ParserRuleContext]:
+    """Return the statements directly nested inside a block statement."""
+
+    nested: list[ParserRuleContext] = []
+
+    def visit(node: ParserRuleContext) -> None:
+        for child in _rule_children(node):
+            if _rule_name(child) == "statement":
+                nested.append(child)  # don't descend; its own children are built recursively
+            else:
+                visit(child)
+
+    visit(statement_ctx)
+    return nested
+
+
+def _loose_paragraphs(ctx: ParserRuleContext) -> list[ParserRuleContext]:
+    """Return paragraphs declared directly under a body/section's paragraph list."""
+
+    container = next((c for c in _rule_children(ctx) if _rule_name(c) == "paragraphs"), None)
+    if container is None:
+        return []
+    return _children_named(container, "paragraph")
+
+
+def _section_names(division: ParserRuleContext) -> tuple[Section, ...]:
+    sections: list[Section] = []
+
+    def visit(node: ParserRuleContext) -> None:
+        for child in _rule_children(node):
+            if _rule_name(child).endswith("Section"):
+                sections.append(Section(name=child.start.text.upper(), line_number=child.start.line))
+            else:
+                visit(child)
+
+    visit(division)
+    return tuple(sections)
+
+
+def _section_header_name(section_ctx: ParserRuleContext) -> str:
+    header = _first(section_ctx, "procedureSectionHeader")
+    token = header.start if header is not None else section_ctx.start
+    return token.text.upper()
+
+
+def _division_lines(division: ParserRuleContext, source_lines: list[str]) -> tuple[str, ...]:
+    start = division.start.line
+    stop = (division.stop or division.start).line
+    return tuple(source_lines[start - 1 : stop])
+
+
+def _ctx_text(ctx: ParserRuleContext) -> str:
+    start = ctx.start
+    stop = ctx.stop or ctx.start
+    return start.getInputStream().getText(start.start, stop.stop)

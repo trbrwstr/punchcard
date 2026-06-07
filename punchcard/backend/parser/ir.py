@@ -14,12 +14,20 @@ from dataclasses import dataclass, field
 
 @dataclass(frozen=True, slots=True)
 class Statement:
-    """A conservative representation of one COBOL statement."""
+    """A single COBOL statement, with nested statements for block constructs.
+
+    ``children`` holds the statements contained by a block statement: the bodies
+    of ``IF``/``ELSE``, the ``WHEN`` branches of ``EVALUATE``, and inline
+    ``PERFORM`` bodies. ``end_line`` is the source line of the statement's last
+    token (equal to ``line_number`` for single-line statements).
+    """
 
     verb: str
     text: str
     line_number: int
     tokens: tuple[str, ...] = field(default_factory=tuple)
+    children: tuple[Statement, ...] = field(default_factory=tuple)
+    end_line: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,13 +100,20 @@ class CobolProgram:
 
     @property
     def all_statements(self) -> Sequence[Statement]:
-        """Flatten procedure-level, section-level, and paragraph statements."""
+        """Flatten every statement, descending into nested block statements."""
 
-        statements: list[Statement] = list(self.procedure.statements)
+        flat: list[Statement] = []
+
+        def add(statements: Sequence[Statement]) -> None:
+            for statement in statements:
+                flat.append(statement)
+                add(statement.children)
+
+        add(self.procedure.statements)
         for section in self.procedure.sections:
-            statements.extend(section.statements)
+            add(section.statements)
             for paragraph in section.paragraphs:
-                statements.extend(paragraph.statements)
+                add(paragraph.statements)
         for paragraph in self.procedure.paragraphs:
-            statements.extend(paragraph.statements)
-        return tuple(statements)
+            add(paragraph.statements)
+        return tuple(flat)
