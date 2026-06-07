@@ -1,32 +1,3 @@
-"""LLM review helpers for Punchcard."""
-
-from punchcard.backend.llm.anthropic_client import AnthropicTranslator
-from punchcard.backend.llm.prompts import render_translation_prompt
-
-__all__ = ["AnthropicTranslator", "render_translation_prompt"]
-from punchcard.backend.llm.client import (
-    ANTHROPIC_TRANSLATION_MODEL,
-    AnthropicTranslationClient,
-    LLMClientError,
-    LLMSettings,
-    TokenUsage,
-    TranslationResult,
-)
-from punchcard.backend.llm.prompts import SYSTEM_PROMPT, USER_PROMPT_TEMPLATE
-
-AnthropicLLMClient = AnthropicTranslationClient
-
-__all__ = [
-    "ANTHROPIC_TRANSLATION_MODEL",
-    "AnthropicLLMClient",
-    "AnthropicTranslationClient",
-    "LLMClientError",
-    "LLMSettings",
-    "SYSTEM_PROMPT",
-    "TokenUsage",
-    "TranslationResult",
-    "USER_PROMPT_TEMPLATE",
-]
 """LLM translation helpers for Punchcard.
 
 The API depends on this tiny abstraction instead of a vendor SDK directly. That
@@ -38,6 +9,17 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Protocol
+
+from punchcard.backend.llm.client import (
+    ANTHROPIC_TRANSLATION_MODEL,
+    AnthropicTranslationClient,
+    LLMClientError,
+    LLMSettings,
+    TokenUsage,
+)
+from punchcard.backend.llm.prompts import SYSTEM_PROMPT, USER_PROMPT_TEMPLATE
+
+AnthropicLLMClient = AnthropicTranslationClient
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,3 +74,19 @@ def _indent_as_comment(text: str) -> str:
     """Render source lines as indented comments inside generated code."""
 
     return "\n".join(f"    # {line}" for line in text.splitlines())
+
+
+__all__ = [
+    "ANTHROPIC_TRANSLATION_MODEL",
+    "AnthropicLLMClient",
+    "AnthropicTranslationClient",
+    "LLMClient",
+    "LLMClientError",
+    "LLMSettings",
+    "MockLLMClient",
+    "SYSTEM_PROMPT",
+    "TokenUsage",
+    "TranslationResult",
+    "USER_PROMPT_TEMPLATE",
+    "get_llm_client",
+]

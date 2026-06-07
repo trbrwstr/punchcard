@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# uv / virtualenv
+.venv/
+
+# Local databases produced at runtime
+*.sqlite3
+punchcard-review.db
+
+# Env
+.env
