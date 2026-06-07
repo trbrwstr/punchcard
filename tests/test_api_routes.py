@@ -92,6 +92,41 @@ def test_confidence_is_structural_and_export_file_is_downloadable(tmp_path, monk
         assert "Proposed Python rewrite" in response.text
 
 
+def test_target_language_drives_status_and_export_extension(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("PUNCHCARD_DATABASE_URL", f"sqlite:///{tmp_path / 'punchcard.sqlite3'}")
+    routes._engine = None
+
+    with TestClient(create_app()) as client:
+        source = Path("fixtures/hello.cbl").read_text(encoding="utf-8")
+        created = client.post(
+            "/sessions",
+            files={"file": ("hello.cbl", source.encode("utf-8"), "text/plain")},
+            data={"target_language": "Java"},
+        )
+        assert created.status_code == 201
+        assert created.json()["target_language"] == "java"  # normalized
+        session_id = created.json()["id"]
+
+        assert client.get(f"/sessions/{session_id}").json()["target_language"] == "java"
+
+        client.post(f"/sessions/{session_id}/paragraphs/MAIN-PARA/translate")
+        export = client.get(f"/sessions/{session_id}/export/file")
+        assert export.headers["content-disposition"] == 'attachment; filename="hello.java"'
+
+
+def test_target_language_defaults_to_python(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("PUNCHCARD_DATABASE_URL", f"sqlite:///{tmp_path / 'punchcard.sqlite3'}")
+    routes._engine = None
+
+    with TestClient(create_app()) as client:
+        source = Path("fixtures/hello.cbl").read_text(encoding="utf-8")
+        created = client.post(
+            "/sessions",
+            files={"file": ("hello.cbl", source.encode("utf-8"), "text/plain")},
+        )
+        assert created.json()["target_language"] == "python"
+
+
 def test_upload_rejects_non_cobol_extension(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("PUNCHCARD_DATABASE_URL", f"sqlite:///{tmp_path / 'punchcard.sqlite3'}")
     routes._engine = None

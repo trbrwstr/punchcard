@@ -99,18 +99,23 @@ class AnthropicLLMClient:
         return TranslationResult(translated_text=result.translated_code, risk_flags=("LLM_TRANSLATION",))
 
 
-def get_llm_client(settings: LLMSettings | None = None) -> LLMClient:
+def get_llm_client(
+    settings: LLMSettings | None = None,
+    *,
+    target_language: str = DEFAULT_TARGET_LANGUAGE,
+) -> LLMClient:
     """Return the configured LLM client.
 
     Falls back to the offline :class:`MockLLMClient` whenever real calls are
     blocked (tests) or no API key is present, so CI and local runs never touch
-    the network by accident.
+    the network by accident. ``target_language`` configures the real client's
+    translation target; the mock is language-agnostic.
     """
 
     settings = settings or LLMSettings()
     if settings.blocks_real_api_calls or settings.anthropic_api_key is None:
         return MockLLMClient()
-    return AnthropicLLMClient(settings=settings)
+    return AnthropicLLMClient(settings=settings, target_language=target_language)
 
 
 def suggested_function_name(paragraph_name: str) -> str:
