@@ -20,6 +20,38 @@ source .venv/bin/activate
 uv pip install -e '.[dev]'
 ```
 
+Lint with `uv run ruff check .`. The same checks (ruff, a compile check, and the
+test suite) run in CI on every pull request via `.github/workflows/ci.yml`.
+
+## LLM integration
+
+Translation goes through a small `LLMClient` seam (`punchcard/backend/llm/`):
+
+* By default `get_llm_client()` returns the offline `MockLLMClient`, so tests,
+  CI, and local runs never touch the network.
+* When `ANTHROPIC_API_KEY` is set (and the process is not under test), it returns
+  the real `AnthropicTranslationClient`, which calls Claude (`claude-opus-4-8`,
+  adaptive thinking) using the templates in `llm/prompts.py`.
+
+Each paragraph carries a structural **confidence score** from
+`llm/confidence.py` (GO TO, ALTER, external CALL, file I/O, and DATA DIVISION
+REDEFINES each subtract an explainable penalty; below 0.6 a paragraph is flagged
+`MANDATORY_REVIEW`) and a **cyclomatic complexity** estimate from
+`parser/complexity.py`.
+
+### Review API (FastAPI)
+
+```
+POST /sessions                                   # upload a .cbl/.cob file
+GET  /sessions/{id}                              # status + progress
+GET  /sessions/{id}/paragraphs                   # per-paragraph status, confidence, risk flags
+POST /sessions/{id}/paragraphs/{name}/translate  # translate one paragraph
+POST /sessions/{id}/paragraphs/{name}/accept     # accept a rewrite
+POST /sessions/{id}/paragraphs/{name}/reject     # reject a rewrite
+GET  /sessions/{id}/export                       # translated output + JSON audit log
+GET  /sessions/{id}/export/file                  # download the assembled module
+```
+
 ## MVP architecture
 
 ```mermaid
@@ -36,9 +68,9 @@ flowchart LR
 
 | Path | Purpose |
 | --- | --- |
-| `punchcard/backend/parser/` | COBOL parsing and IR models. |
-| `punchcard/backend/llm/` | Anthropic-backed review helpers, later with prompt templates and guardrails. |
-| `punchcard/backend/review/` | Static checks and orchestration. |
+| `punchcard/backend/parser/` | COBOL parsing, IR models, and complexity scoring. |
+| `punchcard/backend/llm/` | Anthropic-backed translation client, prompt templates, and confidence scoring. |
+| `punchcard/backend/review/` | In-memory rewrite-review service shared by the API and TUI. |
 | `punchcard/backend/api/` | FastAPI boundary for services and UI clients. |
 | `punchcard/tui/` | Textual terminal UI. |
 | `fixtures/` | Small COBOL examples for repeatable parser work. |

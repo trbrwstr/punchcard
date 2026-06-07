@@ -4,10 +4,14 @@ import pytest
 
 from punchcard.backend.llm import (
     ANTHROPIC_TRANSLATION_MODEL,
+    USER_PROMPT_TEMPLATE,
+    AnthropicLLMClient,
     AnthropicTranslationClient,
     LLMClientError,
     LLMSettings,
-    USER_PROMPT_TEMPLATE,
+    MockLLMClient,
+    get_llm_client,
+    suggested_function_name,
 )
 
 
@@ -54,6 +58,31 @@ def test_test_mode_requires_injected_messages_client() -> None:
         AnthropicTranslationClient(
             settings=LLMSettings(ANTHROPIC_API_KEY=None, PUNCHCARD_TEST_MODE=True)
         )
+
+
+def test_get_llm_client_defaults_to_mock_without_api_key() -> None:
+    client = get_llm_client(LLMSettings(ANTHROPIC_API_KEY=None, PUNCHCARD_TEST_MODE=False))
+    assert isinstance(client, MockLLMClient)
+
+
+def test_get_llm_client_stays_mock_in_test_mode_even_with_key() -> None:
+    client = get_llm_client(LLMSettings(ANTHROPIC_API_KEY="sk-test", PUNCHCARD_TEST_MODE=True))
+    assert isinstance(client, MockLLMClient)
+
+
+def test_get_llm_client_uses_real_client_when_key_present_outside_tests(monkeypatch) -> None:
+    # The pytest env var would otherwise force mock mode; clear it to exercise
+    # the production path. No network call happens at construction time.
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.setenv("PUNCHCARD_TEST_MODE", "false")
+
+    assert isinstance(get_llm_client(), AnthropicLLMClient)
+
+
+def test_suggested_function_name_snake_cases_paragraph() -> None:
+    assert suggested_function_name("CALCULATE-PAY") == "calculate_pay"
+    assert suggested_function_name("100-INIT") == "p_100_init"
 
 
 def test_user_prompt_template_accepts_required_fields() -> None:
