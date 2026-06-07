@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 
 from punchcard.backend.parser import parse_cobol
-from punchcard.backend.parser.preprocessor import CopybookNotFoundError, preprocess
+from punchcard.backend.parser.preprocessor import CopybookNotFoundError, expand, preprocess
 
 PROGRAM_TEMPLATE = """\
        IDENTIFICATION DIVISION.
@@ -132,6 +132,35 @@ def test_parse_cobol_resolves_copybooks_into_the_ir() -> None:
     assert any("CUST-BALANCE" in line for line in program.data.lines)
     # And the procedure that references a copied field parsed normally.
     assert [statement.verb for statement in program.all_statements] == ["MOVE", "DISPLAY", "STOP"]
+
+
+def test_expand_reports_copybook_line_provenance(tmp_path: Path) -> None:
+    _write(tmp_path / "REC.cpy", "       01 WS-FLAG PIC X.\n       01 WS-COUNT PIC 9.\n")
+    source = PROGRAM_TEMPLATE.format(copy_line="       COPY REC.")
+
+    result = expand(source, copybook_paths=[tmp_path])
+
+    assert len(result.copy_spans) == 1
+    span = result.copy_spans[0]
+    assert span.copybook == "REC"
+    lines = result.text.splitlines()
+    # Every line in the reported span comes from the copybook.
+    for line_number in range(span.start_line, span.end_line + 1):
+        assert "WS-" in lines[line_number - 1]
+
+
+def test_parse_cobol_attributes_copied_lines_to_their_copybook() -> None:
+    source = Path("fixtures/with_copy.cbl").read_text(encoding="utf-8")
+
+    program = parse_cobol(source, copybook_paths=["fixtures/copybooks"])
+
+    assert any(span.copybook == "CUSTOMER" for span in program.copy_spans)
+    # A copied data line is attributed to the copybook...
+    cust_line = next(n for n, line in enumerate(program.source.splitlines(), 1) if "CUST-ID" in line)
+    assert program.origin_of(cust_line) == "CUSTOMER"
+    # ...while a hand-written procedure statement is not.
+    move = next(statement for statement in program.all_statements if statement.verb == "MOVE")
+    assert program.origin_of(move.line_number) is None
 
 
 def test_parse_cobol_without_paths_does_not_break_on_unresolved_copy() -> None:

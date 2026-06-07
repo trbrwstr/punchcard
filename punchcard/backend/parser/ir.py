@@ -83,6 +83,19 @@ class ProcedureDiv:
 
 
 @dataclass(frozen=True, slots=True)
+class CopySpan:
+    """A range of expanded-source lines that came from a copybook.
+
+    ``start_line`` and ``end_line`` are 1-based, inclusive, and index into
+    :attr:`CobolProgram.source` (the expanded text).
+    """
+
+    copybook: str
+    start_line: int
+    end_line: int
+
+
+@dataclass(frozen=True, slots=True)
 class CobolProgram:
     """Top-level IR document for one COBOL program."""
 
@@ -91,12 +104,21 @@ class CobolProgram:
     environment: EnvironmentDiv = field(default_factory=EnvironmentDiv)
     data: DataDiv = field(default_factory=DataDiv)
     procedure: ProcedureDiv = field(default_factory=ProcedureDiv)
+    copy_spans: tuple[CopySpan, ...] = field(default_factory=tuple)
 
     @property
     def program_id(self) -> str | None:
         """Return the PROGRAM-ID when present."""
 
         return self.identification.program_id
+
+    def origin_of(self, line_number: int) -> str | None:
+        """Return the copybook a given expanded-source line came from, if any."""
+
+        for span in self.copy_spans:
+            if span.start_line <= line_number <= span.end_line:
+                return span.copybook
+        return None
 
     @property
     def all_statements(self) -> Sequence[Statement]:

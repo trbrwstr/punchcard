@@ -33,7 +33,7 @@ from punchcard.backend.parser.ir import (
     Section,
     Statement,
 )
-from punchcard.backend.parser.preprocessor import preprocess
+from punchcard.backend.parser.preprocessor import expand
 
 _TOKEN_RE = re.compile(r"[A-Za-z0-9_-]+")
 
@@ -47,8 +47,8 @@ def parse_cobol(source: str, *, copybook_paths: Iterable[str | Path] = ()) -> Co
     expanded source, which is also what :attr:`CobolProgram.source` stores.
     """
 
-    expanded = preprocess(source, copybook_paths=copybook_paths)
-    lexer = Cobol85Lexer(InputStream(expanded))
+    expanded = expand(source, copybook_paths=copybook_paths)
+    lexer = Cobol85Lexer(InputStream(expanded.text))
     lexer.removeErrorListeners()
     lexer.addErrorListener(_SilentErrorListener())
     parser = Cobol85Parser(CommonTokenStream(lexer))
@@ -56,17 +56,18 @@ def parse_cobol(source: str, *, copybook_paths: Iterable[str | Path] = ()) -> Co
     parser.addErrorListener(_SilentErrorListener())
 
     tree = parser.startRule()
-    source_lines = expanded.splitlines()
+    source_lines = expanded.text.splitlines()
     program_unit = _first(tree, "programUnit")
     if program_unit is None:
-        return CobolProgram(source=expanded)
+        return CobolProgram(source=expanded.text, copy_spans=expanded.copy_spans)
 
     return CobolProgram(
-        source=expanded,
+        source=expanded.text,
         identification=_identification(program_unit),
         environment=_environment(program_unit, source_lines),
         data=_data(program_unit, source_lines),
         procedure=_procedure(program_unit),
+        copy_spans=expanded.copy_spans,
     )
 
 

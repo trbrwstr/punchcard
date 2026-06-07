@@ -23,14 +23,15 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable, Sequence
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from antlr4 import CommonTokenStream, InputStream, ParserRuleContext
 from antlr4.error.ErrorListener import ErrorListener
-from antlr4.TokenStreamRewriter import TokenStreamRewriter
 
 from punchcard.backend.parser._generated.Cobol85PreprocessorLexer import Cobol85PreprocessorLexer
 from punchcard.backend.parser._generated.Cobol85PreprocessorParser import Cobol85PreprocessorParser
+from punchcard.backend.parser.ir import CopySpan
 
 #: Filename suffixes tried (in order) when resolving a copybook name.
 DEFAULT_COPYBOOK_EXTENSIONS: tuple[str, ...] = ("", ".cpy", ".CPY", ".cbl", ".CBL", ".cob", ".COB")
@@ -56,13 +57,42 @@ def preprocess(
             instead of leaving an inline comment marker.
     """
 
+    return expand(source, copybook_paths=copybook_paths, extensions=extensions, strict=strict).text
+
+
+@dataclass(frozen=True, slots=True)
+class ExpandedSource:
+    """Expanded COBOL text plus the copybook provenance of its lines."""
+
+    text: str
+    copy_spans: tuple[CopySpan, ...] = field(default_factory=tuple)
+
+
+def expand(
+    source: str,
+    *,
+    copybook_paths: Iterable[str | Path] = (),
+    extensions: Sequence[str] = DEFAULT_COPYBOOK_EXTENSIONS,
+    strict: bool = False,
+) -> ExpandedSource:
+    """Expand ``COPY``/``REPLACE`` and return the text plus copybook line spans.
+
+    The spans record which expanded-source lines came from a ``COPY`` (attributed
+    to the directly-named copybook). They are reported only when no program-level
+    ``REPLACE``/listing directive altered the text after copy expansion, since
+    those edits would shift line numbers; in that case ``copy_spans`` is empty.
+    """
+
     if not _has_directives(source):
-        return source
+        return ExpandedSource(source)
 
     paths = [Path(p) for p in copybook_paths]
     resolver = _CopybookResolver(paths, tuple(extensions), strict)
-    expanded = _expand_copies(source, resolver, depth=0)
-    return _apply_replace_statements(expanded)
+    after_copy, spans = _expand_copies(source, resolver, depth=0)
+    final = _apply_replace_statements(after_copy)
+    if final != after_copy:
+        return ExpandedSource(final)
+    return ExpandedSource(final, tuple(spans))
 
 
 class CopybookNotFoundError(FileNotFoundError):
@@ -112,24 +142,53 @@ class _CopybookResolver:
         return None
 
 
-def _expand_copies(source: str, resolver: _CopybookResolver, *, depth: int, seen: frozenset[Path] = frozenset()) -> str:
+def _expand_copies(
+    source: str, resolver: _CopybookResolver, *, depth: int, seen: frozenset[Path] = frozenset()
+) -> tuple[str, list[CopySpan]]:
+    """Expand COPY statements, returning the text and copybook line spans.
+
+    Each ``COPY`` interval is replaced by its (recursively expanded) copybook
+    text; the inserted block is attributed to the directly-named copybook.
+    """
+
     parsed = _parse(source)
     if parsed is None:
-        return source
-    tree, tokens = parsed
+        return source, []
+    tree, _tokens = parsed
 
-    copy_statements = _find_all(tree, "copyStatement")
-    if not copy_statements:
-        return source
+    copies = sorted(_find_all(tree, "copyStatement"), key=lambda ctx: ctx.start.start)
+    if not copies:
+        return source, []
 
-    rewriter = TokenStreamRewriter(tokens)
-    for copy_ctx in copy_statements:
-        rewriter.replaceRange(
-            copy_ctx.start.tokenIndex,
-            copy_ctx.stop.tokenIndex,
-            _expand_one_copy(copy_ctx, resolver, depth=depth, seen=seen),
-        )
-    return rewriter.getDefaultText()
+    parts: list[tuple[str, str | None]] = []
+    position = 0
+    for copy_ctx in copies:
+        parts.append((source[position : copy_ctx.start.start], None))
+        parts.append((_expand_one_copy(copy_ctx, resolver, depth=depth, seen=seen), _copy_name(copy_ctx)))
+        position = copy_ctx.stop.stop + 1
+    parts.append((source[position:], None))
+
+    return _join_with_spans(parts)
+
+
+def _join_with_spans(parts: list[tuple[str, str | None]]) -> tuple[str, list[CopySpan]]:
+    text_parts: list[str] = []
+    spans: list[CopySpan] = []
+    line = 1
+    for chunk, origin in parts:
+        if not chunk:
+            continue
+        newlines = chunk.count("\n")
+        if origin is not None:
+            end_line = line + newlines - (1 if chunk.endswith("\n") else 0)
+            spans.append(CopySpan(origin, line, max(line, end_line)))
+        text_parts.append(chunk)
+        line += newlines
+    return "".join(text_parts), spans
+
+
+def _copy_name(copy_ctx: ParserRuleContext) -> str:
+    return _first(copy_ctx, "copySource").getText().strip().strip("'\"").upper()
 
 
 def _expand_one_copy(
@@ -150,7 +209,9 @@ def _expand_one_copy(
         return f"      *> COPY CYCLE SKIPPED: {name}\n"
 
     body = path.read_text(encoding="utf-8")
-    body = _expand_copies(body, resolver, depth=depth + 1, seen=seen | {path})
+    # Nested COPY is expanded; inner spans are folded into this copybook's
+    # attribution, so the returned text is all we need here.
+    body, _inner_spans = _expand_copies(body, resolver, depth=depth + 1, seen=seen | {path})
     if clauses:
         body = _apply_clauses(body, clauses)
     return body if body.endswith("\n") else body + "\n"

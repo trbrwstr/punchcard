@@ -108,7 +108,7 @@ focuses on these verbs first:
 
 ## Known limitations
 
-* `COPY` is expanded inline, so IR line numbers refer to the expanded source; per-copybook provenance is not tracked yet.
+* `COPY` is expanded inline, so IR line numbers refer to the expanded source. Each copied line's originating copybook is tracked (`CobolProgram.copy_spans` / `origin_of`), except when a program-level `REPLACE`/listing directive shifts lines, in which case provenance is omitted.
 * `COPY ... REPLACING` / `REPLACE` substitution is word/pseudo-text based and does not implement the full COBOL token-matching rules.
 * DATA DIVISION entries are retained as raw lines and section names, not typed data declarations.
 * PROCEDURE DIVISION nesting captures block statements as nested children, but there is no full control-flow graph yet.
