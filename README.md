@@ -78,9 +78,23 @@ flowchart LR
 
 the architecture keeps arguments close to sources: parser nodes retain line numbers, and review output should cite the code it discusses.
 
-## Supported COBOL verbs in the line parser
+## Parsing
 
-The current parser records any procedure statement's first token as the verb. The MVP fixture and review path are expected to focus on these verbs first:
+COBOL is parsed with the [grammars-v4](https://github.com/antlr/grammars-v4/tree/master/cobol85)
+COBOL85 grammar via ANTLR (vendored under `parser/_generated/`, so no Java is
+needed at runtime). The parse tree is walked into a small structured IR: each
+statement records its verb, source span, and any nested statements (the bodies of
+`IF`/`EVALUATE` and inline `PERFORM`).
+
+`COPY`/`REPLACE` are expanded first by a preprocessor (also ANTLR-grammar-based);
+copybooks are resolved from a search path:
+
+```bash
+uv run punchcard program.cbl --copybook-path ./copybooks
+```
+
+Each procedure statement is recorded with its leading verb. The review path
+focuses on these verbs first:
 
 | Verb | MVP status | Notes |
 | --- | --- | --- |
@@ -94,9 +108,8 @@ The current parser records any procedure statement's first token as the verb. Th
 
 ## Known limitations
 
-* The parser is conservative and line-based. It is intentionally not a full COBOL grammar yet.
-* Multi-line statements are not joined.
-* Copybooks, dialect-specific syntax, and compiler directives are not expanded.
+* `COPY` is expanded inline, so IR line numbers refer to the expanded source; per-copybook provenance is not tracked yet.
+* `COPY ... REPLACING` / `REPLACE` substitution is word/pseudo-text based and does not implement the full COBOL token-matching rules.
 * DATA DIVISION entries are retained as raw lines and section names, not typed data declarations.
-* PROCEDURE DIVISION nesting is shallow: sections, paragraphs, and one-line statements are captured, but no full control-flow graph exists yet.
-* Security posture for future API/LLM work: never send proprietary COBOL to an external model without explicit user approval, redaction policy, and audit logging.
+* PROCEDURE DIVISION nesting captures block statements as nested children, but there is no full control-flow graph yet.
+* Security posture for API/LLM work: real translation only runs when `ANTHROPIC_API_KEY` is set (otherwise a local mock is used); never send proprietary COBOL to an external model without explicit user approval, redaction policy, and audit logging.

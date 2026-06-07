@@ -42,13 +42,20 @@ def main() -> None:
 
     parser = argparse.ArgumentParser(description="Parse a COBOL file into Punchcard IR.")
     parser.add_argument("path", nargs="?", type=Path, help="COBOL source file to parse")
+    parser.add_argument(
+        "--copybook-path",
+        action="append",
+        default=[],
+        metavar="DIR",
+        help="Directory to search for COPY copybooks (repeatable)",
+    )
     args = parser.parse_args()
 
     if args.path is None:
         console.print("Punchcard is ready. Pass a COBOL file path to parse it.")
         return
 
-    program = parse_cobol(args.path.read_text(encoding="utf-8"))
+    program = parse_cobol(args.path.read_text(encoding="utf-8"), copybook_paths=args.copybook_path)
     console.print(
         {
             "program_id": program.program_id,
