@@ -66,6 +66,15 @@ class MockLLMClient:
 
         body = source.strip() or "*> empty paragraph"
         if self.target_language == "java":
+            class_name = _java_class_name(name)
+            translated = (
+                f"// Proposed Java rewrite for COBOL paragraph {name}\n"
+                f"final class {class_name} {{\n"
+                "    Object run(Object context) {\n"
+                "        // Original COBOL:\n"
+                f"{_indent_as_comment(body, prefix='//', spaces=8)}\n"
+                "        return context;\n"
+                "    }\n"
             translated = (
                 f"// Proposed Java rewrite for COBOL paragraph {name}\n"
                 "public Object run(Object context) {\n"
@@ -144,10 +153,21 @@ def suggested_function_name(paragraph_name: str) -> str:
     return cleaned
 
 
-def _indent_as_comment(text: str, *, prefix: str) -> str:
+def _java_class_name(paragraph_name: str) -> str:
+    """Derive a safe package-private Java class name for mock output."""
+
+    parts = re.findall(r"[0-9a-zA-Z]+", paragraph_name)
+    class_name = "".join(part[:1].upper() + part[1:].lower() for part in parts) or "Paragraph"
+    if class_name[0].isdigit():
+        class_name = f"P{class_name}"
+    return f"{class_name}Translation"
+
+
+def _indent_as_comment(text: str, *, prefix: str, spaces: int = 4) -> str:
     """Render source lines as indented comments inside generated code."""
 
-    return "\n".join(f"    {prefix} {line}" for line in text.splitlines())
+    indentation = " " * spaces
+    return "\n".join(f"{indentation}{prefix} {line}" for line in text.splitlines())
 
 
 AnthropicLLMTranslationClient = AnthropicTranslationClient
