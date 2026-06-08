@@ -21,6 +21,7 @@ the input, the original source is returned untouched.
 
 from __future__ import annotations
 
+import difflib
 import re
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
@@ -91,12 +92,36 @@ def expand(
     after_copy, spans = _expand_copies(source, resolver, depth=0)
     final = _apply_replace_statements(after_copy)
     if final != after_copy:
-        return ExpandedSource(final)
+        # REPLACE/listing directives shifted lines; remap spans onto the final text.
+        spans = _remap_spans(spans, after_copy, final)
     return ExpandedSource(final, tuple(spans))
 
 
 class CopybookNotFoundError(FileNotFoundError):
     """Raised in strict mode when a ``COPY`` target cannot be resolved."""
+
+
+def _remap_spans(spans: list[CopySpan], old_text: str, new_text: str) -> list[CopySpan]:
+    """Map copybook spans from ``old_text`` line numbers onto ``new_text``.
+
+    Uses a line-level diff so spans survive the line shifts the REPLACE pass
+    introduces (removed directive lines, collapsed multi-line replacements).
+    Lines that the REPLACE pass changed drop out of the mapping; a span is kept
+    if any of its lines still has a counterpart in the new text.
+    """
+
+    matcher = difflib.SequenceMatcher(a=old_text.splitlines(), b=new_text.splitlines(), autojunk=False)
+    old_to_new: dict[int, int] = {}
+    for old_start, new_start, size in matcher.get_matching_blocks():
+        for offset in range(size):
+            old_to_new[old_start + offset + 1] = new_start + offset + 1
+
+    remapped: list[CopySpan] = []
+    for span in spans:
+        mapped = [old_to_new[line] for line in range(span.start_line, span.end_line + 1) if line in old_to_new]
+        if mapped:
+            remapped.append(CopySpan(span.copybook, min(mapped), max(mapped)))
+    return remapped
 
 
 def _has_directives(source: str) -> bool:
@@ -148,7 +173,9 @@ def _expand_copies(
     """Expand COPY statements, returning the text and copybook line spans.
 
     Each ``COPY`` interval is replaced by its (recursively expanded) copybook
-    text; the inserted block is attributed to the directly-named copybook.
+    text. Lines are attributed to the *innermost* copybook they came from: a
+    nested ``COPY``'s lines keep the nested copybook's name, and the enclosing
+    copybook claims only its own lines.
     """
 
     parsed = _parse(source)
@@ -160,30 +187,30 @@ def _expand_copies(
     if not copies:
         return source, []
 
-    parts: list[tuple[str, str | None]] = []
+    parts: list[tuple[str, list[CopySpan]]] = []
     position = 0
     for copy_ctx in copies:
-        parts.append((source[position : copy_ctx.start.start], None))
-        parts.append((_expand_one_copy(copy_ctx, resolver, depth=depth, seen=seen), _copy_name(copy_ctx)))
+        parts.append((source[position : copy_ctx.start.start], []))
+        parts.append(_expand_one_copy(copy_ctx, resolver, depth=depth, seen=seen))
         position = copy_ctx.stop.stop + 1
-    parts.append((source[position:], None))
+    parts.append((source[position:], []))
 
     return _join_with_spans(parts)
 
 
-def _join_with_spans(parts: list[tuple[str, str | None]]) -> tuple[str, list[CopySpan]]:
+def _join_with_spans(parts: list[tuple[str, list[CopySpan]]]) -> tuple[str, list[CopySpan]]:
+    """Concatenate parts, shifting each part's relative spans to absolute lines."""
+
     text_parts: list[str] = []
     spans: list[CopySpan] = []
     line = 1
-    for chunk, origin in parts:
+    for chunk, relative_spans in parts:
         if not chunk:
             continue
-        newlines = chunk.count("\n")
-        if origin is not None:
-            end_line = line + newlines - (1 if chunk.endswith("\n") else 0)
-            spans.append(CopySpan(origin, line, max(line, end_line)))
+        for span in relative_spans:
+            spans.append(CopySpan(span.copybook, line + span.start_line - 1, line + span.end_line - 1))
         text_parts.append(chunk)
-        line += newlines
+        line += chunk.count("\n")
     return "".join(text_parts), spans
 
 
@@ -193,28 +220,56 @@ def _copy_name(copy_ctx: ParserRuleContext) -> str:
 
 def _expand_one_copy(
     copy_ctx: ParserRuleContext, resolver: _CopybookResolver, *, depth: int, seen: frozenset[Path]
-) -> str:
-    name = _first(copy_ctx, "copySource").getText()
+) -> tuple[str, list[CopySpan]]:
+    """Expand one COPY, returning its text and spans relative to that text."""
+
+    name = _copy_name(copy_ctx)
     clauses = _replace_clauses(copy_ctx)
 
     if depth >= _MAX_COPY_DEPTH:
-        return f"      *> COPY DEPTH LIMIT REACHED: {name}\n"
-
+        return _marker(f"COPY DEPTH LIMIT REACHED: {name}", name)
     path = resolver.resolve(name)
     if path is None:
         if resolver.strict:
             raise CopybookNotFoundError(name)
-        return f"      *> COPYBOOK NOT FOUND: {name}\n"
+        return _marker(f"COPYBOOK NOT FOUND: {name}", name)
     if path in seen:
-        return f"      *> COPY CYCLE SKIPPED: {name}\n"
+        return _marker(f"COPY CYCLE SKIPPED: {name}", name)
 
     body = path.read_text(encoding="utf-8")
-    # Nested COPY is expanded; inner spans are folded into this copybook's
-    # attribution, so the returned text is all we need here.
-    body, _inner_spans = _expand_copies(body, resolver, depth=depth + 1, seen=seen | {path})
+    body, inner_spans = _expand_copies(body, resolver, depth=depth + 1, seen=seen | {path})
     if clauses:
+        before = body.count("\n")
         body = _apply_clauses(body, clauses)
-    return body if body.endswith("\n") else body + "\n"
+        if body.count("\n") != before:
+            # A multi-line pseudo-text replacement moved line boundaries; the
+            # inner spans no longer line up, so attribute the whole block to name.
+            inner_spans = []
+    if not body.endswith("\n"):
+        body += "\n"
+    return body, _attribute_remaining(body, inner_spans, name)
+
+
+def _marker(message: str, name: str) -> tuple[str, list[CopySpan]]:
+    return f"      *> {message}\n", [CopySpan(name, 1, 1)]
+
+
+def _attribute_remaining(text: str, inner_spans: list[CopySpan], name: str) -> list[CopySpan]:
+    """Attribute lines not covered by ``inner_spans`` to ``name``."""
+
+    total = len(text.splitlines())
+    covered = {line for span in inner_spans for line in range(span.start_line, span.end_line + 1)}
+    spans = list(inner_spans)
+    start: int | None = None
+    for line in range(1, total + 1):
+        if line not in covered:
+            start = line if start is None else start
+        elif start is not None:
+            spans.append(CopySpan(name, start, line - 1))
+            start = None
+    if start is not None:
+        spans.append(CopySpan(name, start, total))
+    return spans
 
 
 # --- REPLACE statement handling ---------------------------------------------
