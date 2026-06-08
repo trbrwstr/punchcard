@@ -17,7 +17,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import Column, Text
@@ -32,6 +32,17 @@ from punchcard.backend.parser.ir import CobolProgram, DataDiv, Paragraph
 ALLOWED_EXTENSIONS = {".cbl", ".cob"}
 MAX_UPLOAD_BYTES = 2 * 1024 * 1024
 DEFAULT_DATABASE_URL = "sqlite:///./punchcard.sqlite3"
+
+#: Supported translation targets and the file extension each exports to.
+LANGUAGE_EXTENSIONS = {"python": ".py", "java": ".java"}
+DEFAULT_TARGET_LANGUAGE = "python"
+
+
+def _normalize_language(language: str) -> str:
+    """Normalize a requested target language to a supported value."""
+
+    normalized = (language or "").strip().lower()
+    return normalized if normalized in LANGUAGE_EXTENSIONS else DEFAULT_TARGET_LANGUAGE
 
 router = APIRouter()
 _engine = None
@@ -49,6 +60,7 @@ class RewriteSession(SQLModel, table=True):
     id: str = SQLField(default_factory=lambda: str(uuid.uuid4()), primary_key=True)
     filename: str
     program_id: str | None = None
+    target_language: str = "python"
     status: str = "READY"
     source: str = SQLField(sa_column=Column(Text, nullable=False))
     ir_json: str = SQLField(sa_column=Column(Text, nullable=False))
@@ -88,6 +100,7 @@ class SessionCreateResponse(BaseModel):
     id: str
     filename: str
     program_id: str | None
+    target_language: str
     status: str
     progress: float = Field(ge=0, le=1)
     paragraph_count: int
@@ -99,6 +112,7 @@ class SessionStatusResponse(BaseModel):
     id: str
     filename: str
     program_id: str | None
+    target_language: str
     status: str
     progress: float = Field(ge=0, le=1)
     paragraph_count: int
@@ -178,6 +192,7 @@ class ErrorResponse(BaseModel):
 def create_session(
     file: Annotated[UploadFile, File(description="A COBOL source file ending in .cbl or .cob")],
     db: Annotated[Session, Depends(get_db)],
+    target_language: Annotated[str, Form()] = "python",
 ) -> SessionCreateResponse:
     """Upload COBOL, parse it into IR, and persist a rewrite session."""
 
@@ -187,6 +202,7 @@ def create_session(
     session = RewriteSession(
         filename=Path(file.filename or "upload.cbl").name,
         program_id=program.program_id,
+        target_language=_normalize_language(target_language),
         source=content,
         ir_json=json.dumps(asdict(program)),
     )
@@ -218,6 +234,7 @@ def create_session(
         id=session.id,
         filename=session.filename,
         program_id=session.program_id,
+        target_language=session.target_language,
         status=session.status,
         progress=0.0,
         paragraph_count=len(paragraphs),
@@ -262,9 +279,10 @@ def list_paragraphs(session_id: str, db: Annotated[Session, Depends(get_db)]) ->
 def translate_paragraph(session_id: str, name: str, db: Annotated[Session, Depends(get_db)]) -> TranslationResponse:
     """Translate one paragraph through the configured LLM abstraction."""
 
-    _get_session_or_404(db, session_id)
+    session = _get_session_or_404(db, session_id)
     paragraph = _get_paragraph_or_404(db, session_id, name)
-    result = get_llm_client().translate_paragraph(name=paragraph.name, source=paragraph.source)
+    client = get_llm_client(target_language=session.target_language)
+    result = client.translate_paragraph(name=paragraph.name, source=paragraph.source)
     merged_risks = sorted(set(_json_list(paragraph.risk_flags_json)).union(result.risk_flags))
     # Confidence is the structural score computed at session creation; the
     # translator may add risk flags but does not move the heuristic score.
@@ -356,7 +374,7 @@ def export_session_file(session_id: str, db: Annotated[Session, Depends(get_db)]
 
     session = _get_session_or_404(db, session_id)
     paragraphs = list(_session_paragraphs(db, session_id))
-    filename = _module_filename(session.filename)
+    filename = _module_filename(session.filename, session.target_language)
     return PlainTextResponse(
         content=_assemble_module(session.filename, paragraphs),
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
@@ -507,6 +525,7 @@ def _session_status_response(session: RewriteSession, paragraphs: list[Paragraph
         id=session.id,
         filename=session.filename,
         program_id=session.program_id,
+        target_language=session.target_language,
         status=status_value,
         progress=progress,
         paragraph_count=len(paragraphs),
@@ -532,11 +551,12 @@ def _export_text(paragraph: ParagraphRewrite) -> str:
     return f"{header}\n{body}"
 
 
-def _module_filename(source_filename: str) -> str:
-    """Derive a Python module filename from the uploaded COBOL filename."""
+def _module_filename(source_filename: str, target_language: str = DEFAULT_TARGET_LANGUAGE) -> str:
+    """Derive the exported module filename from the upload name and target language."""
 
     stem = Path(source_filename).stem or "translation"
-    return f"{stem}.py"
+    extension = LANGUAGE_EXTENSIONS.get(target_language, LANGUAGE_EXTENSIONS[DEFAULT_TARGET_LANGUAGE])
+    return f"{stem}{extension}"
 
 
 def _assemble_module(source_filename: str, paragraphs: list[ParagraphRewrite]) -> str:

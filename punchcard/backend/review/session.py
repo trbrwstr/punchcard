@@ -16,8 +16,9 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from punchcard.backend.llm.confidence import score_paragraph
 from punchcard.backend.parser import parse_cobol
-from punchcard.backend.parser.ir import Paragraph, Statement
+from punchcard.backend.parser.ir import DataDiv, Paragraph, Statement
 
 
 @dataclass(slots=True)
@@ -92,10 +93,10 @@ class RewriteSessionService:
         for section in program.procedure.sections:
             paragraphs.extend(section.paragraphs)
 
-        items = [_item_from_paragraph(paragraph) for paragraph in paragraphs]
+        items = [_item_from_paragraph(paragraph, program.data) for paragraph in paragraphs]
         if not items and program.all_statements:
             synthetic = Paragraph(name="PROCEDURE", line_number=1, statements=tuple(program.all_statements))
-            items.append(_item_from_paragraph(synthetic))
+            items.append(_item_from_paragraph(synthetic, program.data))
 
         session = RewriteSession(id=session_id or uuid4().hex, items=items)
         self._sessions[session.id] = session
@@ -193,17 +194,19 @@ def _item_from_mapping(raw_item: dict[str, Any]) -> RewriteItem:
     )
 
 
-def _item_from_paragraph(paragraph: Paragraph) -> RewriteItem:
+def _item_from_paragraph(paragraph: Paragraph, data_div: DataDiv | None = None) -> RewriteItem:
     original = _paragraph_source(paragraph)
     suggestion = _suggest_translation(paragraph.statements)
+    confidence = score_paragraph(paragraph, data_div)
     return RewriteItem(
         id=f"{paragraph.name.lower()}-{paragraph.line_number}",
         paragraph_name=paragraph.name,
         original=original,
         suggested_translation=suggestion,
         unified_diff=_unified_diff(original, suggestion),
-        confidence_score=_confidence(paragraph.statements),
-        risk_flags=_risk_flags(paragraph.statements),
+        confidence_score=confidence.score,
+        # score_paragraph emits one flag per offending statement; dedupe for display.
+        risk_flags=list(dict.fromkeys(confidence.risk_flags)),
     )
 
 
@@ -241,27 +244,6 @@ def _regenerated_translation(item: RewriteItem) -> str:
 def _display_argument(statement: Statement) -> str:
     text = statement.text.removeprefix("DISPLAY").strip()
     return text.strip("'") or ""
-
-
-def _risk_flags(statements: tuple[Statement, ...]) -> list[str]:
-    flags: list[str] = []
-    verbs = {statement.verb for statement in statements}
-    if "CALL" in verbs:
-        flags.append("external-call")
-    if {"READ", "WRITE"} & verbs:
-        flags.append("file-io")
-    if "PERFORM" in verbs:
-        flags.append("control-flow")
-    if any(statement.verb not in {"DISPLAY", "MOVE", "STOP"} for statement in statements):
-        flags.append("manual-review")
-    return flags
-
-
-def _confidence(statements: tuple[Statement, ...]) -> float:
-    if not statements:
-        return 0.4
-    supported = sum(statement.verb in {"DISPLAY", "MOVE", "STOP"} for statement in statements)
-    return round(0.35 + (supported / len(statements)) * 0.55, 2)
 
 
 def _replace_translation(item: RewriteItem, edited_translation: str) -> None:
