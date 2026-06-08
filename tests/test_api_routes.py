@@ -112,6 +112,8 @@ def test_target_language_drives_status_and_export_extension(tmp_path, monkeypatc
         client.post(f"/sessions/{session_id}/paragraphs/MAIN-PARA/translate")
         export = client.get(f"/sessions/{session_id}/export/file")
         assert export.headers["content-disposition"] == 'attachment; filename="hello.java"'
+        assert "Proposed Java rewrite" in export.text
+        assert "Proposed Python rewrite" not in export.text
 
 
 def test_target_language_defaults_to_python(tmp_path, monkeypatch) -> None:
