@@ -112,6 +112,8 @@ def test_target_language_drives_status_and_export_extension(tmp_path, monkeypatc
         client.post(f"/sessions/{session_id}/paragraphs/MAIN-PARA/translate")
         export = client.get(f"/sessions/{session_id}/export/file")
         assert export.headers["content-disposition"] == 'attachment; filename="hello.java"'
+        assert "Proposed Java rewrite" in export.text
+        assert "Proposed Python rewrite" not in export.text
 
 
 def test_target_language_defaults_to_python(tmp_path, monkeypatch) -> None:
@@ -139,3 +141,43 @@ def test_upload_rejects_non_cobol_extension(tmp_path, monkeypatch) -> None:
 
     assert response.status_code == 400
     assert response.json()["detail"] == "Upload must be a .cbl or .cob file."
+
+
+def test_export_file_uses_language_comments_for_java(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("PUNCHCARD_DATABASE_URL", f"sqlite:///{tmp_path / 'punchcard.sqlite3'}")
+    routes._engine = None
+
+    with TestClient(create_app()) as client:
+        source = Path("fixtures/hello.cbl").read_text(encoding="utf-8")
+        session_id = client.post(
+            "/sessions",
+            files={"file": ("hello.cbl", source.encode("utf-8"), "text/plain")},
+            data={"target_language": "java"},
+        ).json()["id"]
+
+        response = client.get(f"/sessions/{session_id}/export/file")
+
+    assert response.status_code == 200
+    assert response.headers["content-disposition"] == 'attachment; filename="hello.java"'
+    assert response.text.startswith("// Translated from hello.cbl by Punchcard.")
+    assert "// --- MAIN-PARA [PENDING] ---" in response.text
+    assert "// Untranslated COBOL paragraph MAIN-PARA:" in response.text
+
+
+def test_upload_filename_is_sanitized_before_storage_and_download(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("PUNCHCARD_DATABASE_URL", f"sqlite:///{tmp_path / 'punchcard.sqlite3'}")
+    routes._engine = None
+
+    with TestClient(create_app()) as client:
+        source = Path("fixtures/hello.cbl").read_text(encoding="utf-8")
+        created = client.post(
+            "/sessions",
+            files={"file": ("bad name<>with chars.cbl", source.encode("utf-8"), "text/plain")},
+        )
+        session_id = created.json()["id"]
+        export = client.get(f"/sessions/{session_id}/export/file")
+
+    assert created.status_code == 201
+    assert created.json()["filename"] == "bad_name_with_chars.cbl"
+    assert export.headers["content-disposition"] == 'attachment; filename="bad_name_with_chars.py"'
+    assert "Translated from bad_name_with_chars.cbl" in export.text
