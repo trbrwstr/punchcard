@@ -53,20 +53,38 @@ class MockLLMClient:
 
     This intentionally does not call the network. In cybersecurity terms, it is
     the MVP's fence around proprietary COBOL: no source leaves the process unless
-    a real client is deliberately plugged in.
+    a real client is deliberately plugged in. The output is deliberately simple,
+    but it still follows the requested target language so local demos do not
+    produce misleading artifacts.
     """
 
+    def __init__(self, *, target_language: str = DEFAULT_TARGET_LANGUAGE) -> None:
+        self.target_language = target_language.strip().lower()
+
     def translate_paragraph(self, *, name: str, source: str) -> TranslationResult:
-        """Produce a readable Python-style pseudocode rewrite."""
+        """Produce a readable local pseudocode rewrite for the target language."""
 
         body = source.strip() or "*> empty paragraph"
-        translated = (
-            f"# Proposed Python rewrite for COBOL paragraph {name}\n"
-            "def run(context):\n"
-            f"    # Original COBOL:\n"
-            f"{_indent_as_comment(body)}\n"
-            "    return context"
-        )
+        if self.target_language == "java":
+            class_name = _java_class_name(name)
+            translated = (
+                f"// Proposed Java rewrite for COBOL paragraph {name}\n"
+                f"final class {class_name} {{\n"
+                "    Object run(Object context) {\n"
+                "        // Original COBOL:\n"
+                f"{_indent_as_comment(body, prefix='//', spaces=8)}\n"
+                "        return context;\n"
+                "    }\n"
+                "}"
+            )
+        else:
+            translated = (
+                f"# Proposed Python rewrite for COBOL paragraph {name}\n"
+                "def run(context):\n"
+                "    # Original COBOL:\n"
+                f"{_indent_as_comment(body, prefix='#')}\n"
+                "    return context"
+            )
         return TranslationResult(translated_text=translated, risk_flags=("MOCK_TRANSLATION",))
 
 
@@ -108,13 +126,13 @@ def get_llm_client(
 
     Falls back to the offline :class:`MockLLMClient` whenever real calls are
     blocked (tests) or no API key is present, so CI and local runs never touch
-    the network by accident. ``target_language`` configures the real client's
-    translation target; the mock is language-agnostic.
+    the network by accident. ``target_language`` configures both the real client
+    and the deterministic local mock output.
     """
 
     settings = settings or LLMSettings()
     if settings.blocks_real_api_calls or settings.anthropic_api_key is None:
-        return MockLLMClient()
+        return MockLLMClient(target_language=target_language)
     return AnthropicLLMClient(settings=settings, target_language=target_language)
 
 
@@ -129,10 +147,21 @@ def suggested_function_name(paragraph_name: str) -> str:
     return cleaned
 
 
-def _indent_as_comment(text: str) -> str:
+def _java_class_name(paragraph_name: str) -> str:
+    """Derive a safe package-private Java class name for mock output."""
+
+    parts = re.findall(r"[0-9a-zA-Z]+", paragraph_name)
+    class_name = "".join(part[:1].upper() + part[1:].lower() for part in parts) or "Paragraph"
+    if class_name[0].isdigit():
+        class_name = f"P{class_name}"
+    return f"{class_name}Translation"
+
+
+def _indent_as_comment(text: str, *, prefix: str, spaces: int = 4) -> str:
     """Render source lines as indented comments inside generated code."""
 
-    return "\n".join(f"    # {line}" for line in text.splitlines())
+    indentation = " " * spaces
+    return "\n".join(f"{indentation}{prefix} {line}" for line in text.splitlines())
 
 
 AnthropicLLMTranslationClient = AnthropicTranslationClient
