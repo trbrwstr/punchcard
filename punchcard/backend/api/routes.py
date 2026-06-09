@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import uuid
 from collections.abc import Iterable
 from dataclasses import asdict
@@ -35,7 +36,10 @@ DEFAULT_DATABASE_URL = "sqlite:///./punchcard.sqlite3"
 
 #: Supported translation targets and the file extension each exports to.
 LANGUAGE_EXTENSIONS = {"python": ".py", "java": ".java"}
+COMMENT_PREFIXES = {"python": "#", "java": "//"}
 DEFAULT_TARGET_LANGUAGE = "python"
+SAFE_FILENAME_PATTERN = re.compile(r"[^A-Za-z0-9._-]+")
+MAX_FILENAME_LENGTH = 120
 
 
 def _normalize_language(language: str) -> str:
@@ -43,6 +47,7 @@ def _normalize_language(language: str) -> str:
 
     normalized = (language or "").strip().lower()
     return normalized if normalized in LANGUAGE_EXTENSIONS else DEFAULT_TARGET_LANGUAGE
+
 
 router = APIRouter()
 _engine = None
@@ -211,7 +216,7 @@ def create_session(
     content = _read_upload_text(file)
     program = parse_cobol(content)
     session = RewriteSession(
-        filename=Path(file.filename or "upload.cbl").name,
+        filename=_safe_upload_filename(file.filename),
         program_id=program.program_id,
         target_language=_normalize_language(target_language),
         source=content,
@@ -373,16 +378,14 @@ def export_session(session_id: str, db: Annotated[Session, Depends(get_db)]) -> 
     session = _get_session_or_404(db, session_id)
     paragraphs = list(_session_paragraphs(db, session_id))
     events = list(
-        db.exec(
-            select(AuditEvent)
-            .where(AuditEvent.session_id == session_id)
-            .order_by(AuditEvent.created_at)
-        )
+        db.exec(select(AuditEvent).where(AuditEvent.session_id == session_id).order_by(AuditEvent.created_at))
     )
     return ExportResponse(
         session_id=session.id,
         filename=session.filename,
-        translated_output="\n\n".join(_export_text(paragraph) for paragraph in paragraphs),
+        translated_output="\n\n".join(
+            _export_text(paragraph, target_language=session.target_language) for paragraph in paragraphs
+        ),
         audit_log=[
             AuditEventResponse(
                 event_type=event.event_type,
@@ -407,7 +410,7 @@ def export_session_file(session_id: str, db: Annotated[Session, Depends(get_db)]
     paragraphs = list(_session_paragraphs(db, session_id))
     filename = _module_filename(session.filename, session.target_language)
     return PlainTextResponse(
-        content=_assemble_module(session.filename, paragraphs),
+        content=_assemble_module(session.filename, paragraphs, target_language=session.target_language),
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
@@ -440,6 +443,17 @@ def _validate_upload_name(filename: str | None) -> None:
     suffix = Path(filename or "").suffix.lower()
     if suffix not in ALLOWED_EXTENSIONS:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Upload must be a .cbl or .cob file.")
+
+
+def _safe_upload_filename(filename: str | None) -> str:
+    """Return a basename safe for storage, generated code comments, and headers."""
+
+    original = Path(filename or "upload.cbl").name
+    suffix = Path(original).suffix.lower()
+    stem = Path(original).stem
+    safe_stem = SAFE_FILENAME_PATTERN.sub("_", stem).strip("._-") or "upload"
+    safe_stem = safe_stem[:MAX_FILENAME_LENGTH].rstrip("._-") or "upload"
+    return f"{safe_stem}{suffix}"
 
 
 def _read_upload_text(file: UploadFile) -> str:
@@ -517,9 +531,7 @@ def _get_paragraph_or_404(db: Session, session_id: str, name: str) -> ParagraphR
 
 def _session_paragraphs(db: Session, session_id: str):
     return db.exec(
-        select(ParagraphRewrite)
-        .where(ParagraphRewrite.session_id == session_id)
-        .order_by(ParagraphRewrite.created_at)
+        select(ParagraphRewrite).where(ParagraphRewrite.session_id == session_id).order_by(ParagraphRewrite.created_at)
     )
 
 
@@ -576,43 +588,61 @@ def _progress(paragraphs: list[ParagraphRewrite]) -> float:
     return round((finished + translated * 0.5) / len(paragraphs), 2)
 
 
-def _export_text(paragraph: ParagraphRewrite) -> str:
-    header = f"# Paragraph: {paragraph.name} [{paragraph.status}]"
-    body = paragraph.translated_text if paragraph.translated_text else f"# Untranslated COBOL\n{paragraph.source}"
+def _export_text(paragraph: ParagraphRewrite, *, target_language: str = DEFAULT_TARGET_LANGUAGE) -> str:
+    comment = _comment_prefix(target_language)
+    header = f"{comment} Paragraph: {paragraph.name} [{paragraph.status}]"
+    body = (
+        paragraph.translated_text
+        if paragraph.translated_text
+        else "\n".join([f"{comment} Untranslated COBOL", *_comment_lines(paragraph.source, comment)])
+    )
     return f"{header}\n{body}"
 
 
 def _module_filename(source_filename: str, target_language: str = DEFAULT_TARGET_LANGUAGE) -> str:
     """Derive the exported module filename from the upload name and target language."""
 
-    stem = Path(source_filename).stem or "translation"
+    stem = SAFE_FILENAME_PATTERN.sub("_", Path(source_filename).stem).strip("._-") or "translation"
     extension = LANGUAGE_EXTENSIONS.get(target_language, LANGUAGE_EXTENSIONS[DEFAULT_TARGET_LANGUAGE])
     return f"{stem}{extension}"
 
 
-def _assemble_module(source_filename: str, paragraphs: list[ParagraphRewrite]) -> str:
+def _assemble_module(
+    source_filename: str,
+    paragraphs: list[ParagraphRewrite],
+    *,
+    target_language: str = DEFAULT_TARGET_LANGUAGE,
+) -> str:
     """Assemble a single reviewable module from a session's paragraphs.
 
     Translated paragraphs are emitted as code; anything still untranslated is
     kept as commented COBOL so the output is always a valid, auditable artifact.
     """
 
+    comment = _comment_prefix(target_language)
     lines = [
-        f'"""Translated from {source_filename} by Punchcard.',
-        "",
-        "Review every paragraph before shipping. Paragraphs that were not",
-        'translated are preserved below as commented COBOL source."""',
+        f"{comment} Translated from {source_filename} by Punchcard.",
+        f"{comment} Review every paragraph before shipping. Paragraphs that were not",
+        f"{comment} translated are preserved below as commented COBOL source.",
         "",
     ]
     for paragraph in paragraphs:
-        lines.append(f"# --- {paragraph.name} [{paragraph.status}] ---")
+        lines.append(f"{comment} --- {paragraph.name} [{paragraph.status}] ---")
         if paragraph.translated_text:
             lines.append(paragraph.translated_text.rstrip())
         else:
-            lines.append(f"# Untranslated COBOL paragraph {paragraph.name}:")
-            lines.extend(f"# {cobol_line}" for cobol_line in paragraph.source.splitlines())
+            lines.append(f"{comment} Untranslated COBOL paragraph {paragraph.name}:")
+            lines.extend(_comment_lines(paragraph.source, comment))
         lines.append("")
     return "\n".join(lines).rstrip() + "\n"
+
+
+def _comment_prefix(target_language: str) -> str:
+    return COMMENT_PREFIXES.get(target_language, COMMENT_PREFIXES[DEFAULT_TARGET_LANGUAGE])
+
+
+def _comment_lines(text: str, comment: str) -> list[str]:
+    return [f"{comment} {line}" for line in text.splitlines()]
 
 
 def _add_audit_event(
@@ -654,4 +684,3 @@ def _json_dict(value: str) -> dict[str, Any]:
     except json.JSONDecodeError:
         return {}
     return parsed if isinstance(parsed, dict) else {}
-

@@ -1,3 +1,5 @@
+import shutil
+import subprocess
 from types import SimpleNamespace
 
 import pytest
@@ -55,9 +57,7 @@ def test_translate_paragraph_uses_injected_client_and_returns_metadata() -> None
 
 def test_test_mode_requires_injected_messages_client() -> None:
     with pytest.raises(LLMClientError, match="PUNCHCARD_TEST_MODE"):
-        AnthropicTranslationClient(
-            settings=LLMSettings(ANTHROPIC_API_KEY=None, PUNCHCARD_TEST_MODE=True)
-        )
+        AnthropicTranslationClient(settings=LLMSettings(ANTHROPIC_API_KEY=None, PUNCHCARD_TEST_MODE=True))
 
 
 def test_get_llm_client_defaults_to_mock_without_api_key() -> None:
@@ -68,6 +68,35 @@ def test_get_llm_client_defaults_to_mock_without_api_key() -> None:
 def test_get_llm_client_stays_mock_in_test_mode_even_with_key() -> None:
     client = get_llm_client(LLMSettings(ANTHROPIC_API_KEY="sk-test", PUNCHCARD_TEST_MODE=True))
     assert isinstance(client, MockLLMClient)
+
+
+def test_mock_client_uses_requested_java_shape() -> None:
+    client = MockLLMClient(target_language="java")
+
+    result = client.translate_paragraph(name="MAIN-PARA", source="DISPLAY 'HELLO'.")
+
+    assert result.translated_text.startswith("// Proposed Java rewrite for COBOL paragraph MAIN-PARA")
+    assert "final class MainParaTranslation" in result.translated_text
+    assert "    Object run(Object context)" in result.translated_text
+    assert "        // DISPLAY 'HELLO'." in result.translated_text
+
+    if javac := shutil.which("javac"):
+        java_file = tmp_path / "MockTranslation.java"
+        java_file.write_text(result.translated_text, encoding="utf-8")
+        subprocess.run([javac, str(java_file)], check=True, cwd=tmp_path)
+    assert "public Object run(Object context)" in result.translated_text
+    assert "    // DISPLAY 'HELLO'." in result.translated_text
+
+
+def test_get_llm_client_passes_target_language_to_mock() -> None:
+    client = get_llm_client(
+        LLMSettings(ANTHROPIC_API_KEY=None, PUNCHCARD_TEST_MODE=False),
+        target_language="java",
+    )
+
+    result = client.translate_paragraph(name="MAIN-PARA", source="DISPLAY 'HELLO'.")
+
+    assert "Proposed Java rewrite" in result.translated_text
 
 
 def test_get_llm_client_uses_real_client_when_key_present_outside_tests(monkeypatch) -> None:
