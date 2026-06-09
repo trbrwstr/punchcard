@@ -139,6 +139,17 @@ class ParagraphListResponse(BaseModel):
     paragraphs: list[ParagraphResponse]
 
 
+class ParagraphDetailResponse(BaseModel):
+    """Public paragraph detail including source and any translation."""
+
+    name: str
+    status: str
+    confidence_score: float | None
+    risk_flags: list[str]
+    source: str
+    translated_text: str | None
+
+
 class TranslationResponse(BaseModel):
     """Public response after translation is requested."""
 
@@ -269,6 +280,26 @@ def list_paragraphs(session_id: str, db: Annotated[Session, Depends(get_db)]) ->
         for paragraph in _session_paragraphs(db, session_id)
     ]
     return ParagraphListResponse(session_id=session_id, paragraphs=paragraphs)
+
+
+@router.get(
+    "/sessions/{session_id}/paragraphs/{name}",
+    response_model=ParagraphDetailResponse,
+    responses={404: {"model": ErrorResponse}},
+)
+def get_paragraph(session_id: str, name: str, db: Annotated[Session, Depends(get_db)]) -> ParagraphDetailResponse:
+    """Return one paragraph's source, status, score, risk flags, and translation."""
+
+    _get_session_or_404(db, session_id)
+    paragraph = _get_paragraph_or_404(db, session_id, name)
+    return ParagraphDetailResponse(
+        name=paragraph.name,
+        status=paragraph.status,
+        confidence_score=paragraph.confidence_score,
+        risk_flags=_json_list(paragraph.risk_flags_json),
+        source=paragraph.source,
+        translated_text=paragraph.translated_text,
+    )
 
 
 @router.post(
