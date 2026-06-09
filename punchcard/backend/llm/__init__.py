@@ -75,12 +75,6 @@ class MockLLMClient:
                 f"{_indent_as_comment(body, prefix='//', spaces=8)}\n"
                 "        return context;\n"
                 "    }\n"
-            translated = (
-                f"// Proposed Java rewrite for COBOL paragraph {name}\n"
-                "public Object run(Object context) {\n"
-                "    // Original COBOL:\n"
-                f"{_indent_as_comment(body, prefix='//')}\n"
-                "    return context;\n"
                 "}"
             )
         else:
