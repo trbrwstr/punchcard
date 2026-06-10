@@ -45,12 +45,20 @@ REDEFINES each subtract an explainable penalty; below 0.6 a paragraph is flagged
 POST /sessions                                   # upload a .cbl/.cob file
 GET  /sessions/{id}                              # status + progress
 GET  /sessions/{id}/paragraphs                   # per-paragraph status, confidence, risk flags
+GET  /sessions/{id}/paragraphs/{name}            # one paragraph's source + translation
 POST /sessions/{id}/paragraphs/{name}/translate  # translate one paragraph
 POST /sessions/{id}/paragraphs/{name}/accept     # accept a rewrite
 POST /sessions/{id}/paragraphs/{name}/reject     # reject a rewrite
 GET  /sessions/{id}/export                       # translated output + JSON audit log
 GET  /sessions/{id}/export/file                  # download the assembled module
 ```
+
+### Review interfaces
+
+Two front-ends drive the same review workflow:
+
+* **Terminal UI** — `uv run punchcard-tui --source program.cbl` (Textual).
+* **Web UI** — a React + Vite app in `frontend/`. Build it (`cd frontend && npm install && npm run build`) and run `uv run punchcard-web` to serve the UI and API together; see `frontend/README.md` for the hot-reload dev workflow.
 
 ## MVP architecture
 
@@ -73,6 +81,7 @@ flowchart LR
 | `punchcard/backend/review/` | In-memory rewrite-review service shared by the API and TUI. |
 | `punchcard/backend/api/` | FastAPI boundary for services and UI clients. |
 | `punchcard/tui/` | Textual terminal UI. |
+| `frontend/` | React + Vite web UI (served by FastAPI once built). |
 | `fixtures/` | Small COBOL examples for repeatable parser work. |
 | `tests/` | Pytest suite. |
 

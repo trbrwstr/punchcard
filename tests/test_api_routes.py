@@ -117,6 +117,30 @@ def test_target_language_drives_status_and_export_extension(tmp_path, monkeypatc
         assert "Proposed Python rewrite" not in export.text
 
 
+def test_paragraph_detail_endpoint_returns_source_and_translation(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("PUNCHCARD_DATABASE_URL", f"sqlite:///{tmp_path / 'punchcard.sqlite3'}")
+    routes._engine = None
+
+    with TestClient(create_app()) as client:
+        source = Path("fixtures/hello.cbl").read_text(encoding="utf-8")
+        session_id = client.post(
+            "/sessions",
+            files={"file": ("hello.cbl", source.encode("utf-8"), "text/plain")},
+        ).json()["id"]
+
+        before = client.get(f"/sessions/{session_id}/paragraphs/MAIN-PARA")
+        assert before.status_code == 200
+        assert "DISPLAY" in before.json()["source"]
+        assert before.json()["translated_text"] is None
+
+        client.post(f"/sessions/{session_id}/paragraphs/MAIN-PARA/translate")
+        after = client.get(f"/sessions/{session_id}/paragraphs/MAIN-PARA").json()
+        assert "Proposed Python rewrite" in after["translated_text"]
+
+        missing = client.get(f"/sessions/{session_id}/paragraphs/NOPE")
+        assert missing.status_code == 404
+
+
 def test_target_language_defaults_to_python(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("PUNCHCARD_DATABASE_URL", f"sqlite:///{tmp_path / 'punchcard.sqlite3'}")
     routes._engine = None

@@ -163,6 +163,51 @@ def test_parse_cobol_attributes_copied_lines_to_their_copybook() -> None:
     assert program.origin_of(move.line_number) is None
 
 
+def test_nested_copy_attributes_lines_to_innermost_copybook(tmp_path: Path) -> None:
+    _write(tmp_path / "INNER.cpy", "       01 WS-INNER PIC 9.\n")
+    _write(tmp_path / "OUTER.cpy", "       01 WS-OUTER PIC 9.\n       COPY INNER.\n")
+    source = PROGRAM_TEMPLATE.format(copy_line="       COPY OUTER.")
+
+    result = expand(source, copybook_paths=[tmp_path])
+    lines = result.text.splitlines()
+
+    def origin_of(needle: str) -> str | None:
+        line_number = next(n for n, line in enumerate(lines, 1) if needle in line)
+        return next(
+            (s.copybook for s in result.copy_spans if s.start_line <= line_number <= s.end_line),
+            None,
+        )
+
+    assert origin_of("WS-OUTER") == "OUTER"
+    assert origin_of("WS-INNER") == "INNER"  # innermost wins, not OUTER
+
+
+def test_provenance_survives_replace_line_shift(tmp_path: Path) -> None:
+    _write(tmp_path / "REC.cpy", "       01 WS-COPIED PIC X.\n")
+    source = (
+        "       IDENTIFICATION DIVISION.\n"
+        "       PROGRAM-ID. DEMO.\n"
+        "       DATA DIVISION.\n"
+        "       WORKING-STORAGE SECTION.\n"
+        "       REPLACE ==FOO== BY ==BAR==.\n"
+        "       01 FOO PIC X.\n"
+        "       REPLACE OFF.\n"
+        "       COPY REC.\n"
+        "       PROCEDURE DIVISION.\n"
+        "       MAIN-PARA.\n"
+        "           STOP RUN.\n"
+    )
+
+    program = parse_cobol(source, copybook_paths=[tmp_path])
+
+    # The two REPLACE directive lines were removed (shifting the COPY up), yet
+    # provenance is preserved rather than dropped.
+    assert program.copy_spans
+    copied_line = next(n for n, line in enumerate(program.source.splitlines(), 1) if "WS-COPIED" in line)
+    assert program.origin_of(copied_line) == "REC"
+    assert "REPLACE" not in program.source
+
+
 def test_parse_cobol_without_paths_does_not_break_on_unresolved_copy() -> None:
     source = Path("fixtures/with_copy.cbl").read_text(encoding="utf-8")
 

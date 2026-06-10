@@ -70,7 +70,7 @@ def test_get_llm_client_stays_mock_in_test_mode_even_with_key() -> None:
     assert isinstance(client, MockLLMClient)
 
 
-def test_mock_client_uses_requested_java_shape() -> None:
+def test_mock_client_uses_requested_java_shape(tmp_path) -> None:
     client = MockLLMClient(target_language="java")
 
     result = client.translate_paragraph(name="MAIN-PARA", source="DISPLAY 'HELLO'.")
@@ -80,12 +80,11 @@ def test_mock_client_uses_requested_java_shape() -> None:
     assert "    Object run(Object context)" in result.translated_text
     assert "        // DISPLAY 'HELLO'." in result.translated_text
 
+    # When a JDK is available, the generated mock must be valid, compilable Java.
     if javac := shutil.which("javac"):
-        java_file = tmp_path / "MockTranslation.java"
+        java_file = tmp_path / "MainParaTranslation.java"
         java_file.write_text(result.translated_text, encoding="utf-8")
         subprocess.run([javac, str(java_file)], check=True, cwd=tmp_path)
-    assert "public Object run(Object context)" in result.translated_text
-    assert "    // DISPLAY 'HELLO'." in result.translated_text
 
 
 def test_get_llm_client_passes_target_language_to_mock() -> None:

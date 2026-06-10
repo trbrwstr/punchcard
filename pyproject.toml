@@ -15,6 +15,7 @@ dependencies = [
     "antlr4-python3-runtime>=4.13.2",
     "rich>=13.9.0",
     "textual>=0.83.0",
+    "uvicorn>=0.32.0",
 ]
 
 [dependency-groups]
@@ -29,6 +30,7 @@ dev = [
 [project.scripts]
 punchcard = "punchcard.backend.main:main"
 punchcard-tui = "punchcard.tui.app:main"
+punchcard-web = "punchcard.backend.main:serve"
 
 [build-system]
 requires = ["hatchling"]
