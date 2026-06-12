@@ -1,10 +1,96 @@
 # Punchcard
 
-Punchcard is a workbench for reading legacy COBOL, building a small intermediate representation (IR), and preparing focused static/LLM-assisted reviews. 
+**Modernization support for legacy COBOL systems — built for teams that need clarity before they change critical code.**
 
-## Setup
+Punchcard is a COBOL analysis and review workbench designed to help organizations understand legacy programs, identify risky logic, and prepare safer modernization plans. It combines parser-backed source analysis with optional LLM-assisted explanations so teams can move from "we are afraid to touch this" to a clear, auditable review workflow.
 
-This project targets Python 3.12 and uses [`uv`](https://docs.astral.sh/uv/) for dependency management.
+If you found this project through Fiverr, Upwork, or my freelance portfolio, Punchcard represents the type of practical modernization tooling I can build, adapt, or extend for your business.
+
+## What I can help you with
+
+I work with clients who need dependable engineering support around legacy systems, automation, and modernization. Typical engagements include:
+
+* **COBOL code review and inventory** — map programs, paragraphs, copybooks, file operations, external calls, and high-risk control flow.
+* **Modernization planning** — turn undocumented legacy code into a phased migration roadmap with clear risks, dependencies, and delivery milestones.
+* **Static analysis tools** — build custom analyzers, parsers, dashboards, and reports for proprietary source code.
+* **LLM-assisted review workflows** — add guarded AI explanations, rewrite suggestions, and audit trails without blindly trusting model output.
+* **Internal developer tools** — create CLIs, web apps, APIs, and automation scripts that reduce manual review time.
+* **Secure integration work** — connect tools to internal systems while protecting sensitive source code and business data.
+
+## Why Punchcard exists
+
+Legacy code often runs business-critical operations, but many teams lack the original authors, documentation, or safe test coverage. Modernization efforts fail when teams start rewriting before they understand the system.
+
+Punchcard is built around a safer process:
+
+1. **Parse the source** into a structured representation.
+2. **Preserve traceability** back to the original lines of code.
+3. **Score risk and complexity** so reviewers know where to focus first.
+4. **Review changes paragraph by paragraph** instead of attempting a risky big-bang rewrite.
+5. **Export an audit trail** so decisions are visible and repeatable.
+
+The goal is not to replace experienced engineers. The goal is to give them better tools.
+
+## Current capabilities
+
+Punchcard currently provides:
+
+| Capability | Description |
+| --- | --- |
+| COBOL parsing | Reads COBOL source and builds a structured intermediate representation. |
+| Copybook handling | Expands `COPY` statements from configured copybook paths. |
+| Risk scoring | Flags patterns such as `GO TO`, `ALTER`, external `CALL`, file I/O, and `REDEFINES`. |
+| Complexity estimates | Computes paragraph-level cyclomatic complexity to prioritize review. |
+| Review workflow | Tracks paragraph status, translations, accept/reject decisions, and exportable results. |
+| API access | Provides FastAPI endpoints for uploads, review status, translation, and export. |
+| Web and terminal UIs | Supports both a browser interface and a terminal-based workflow. |
+| Offline-safe default | Uses a local mock LLM client unless a real API key is explicitly configured. |
+
+## Example client deliverables
+
+Depending on your needs, I can turn this foundation into a client-ready deliverable such as:
+
+* A COBOL inventory report for a specific application portfolio.
+* A risk-ranked modernization assessment.
+* A searchable web dashboard for legacy programs and copybooks.
+* A secure internal review tool with role-based workflow.
+* A custom parser or analyzer for your organization's coding standards.
+* A migration planning document with MVP scope, milestones, and technical tradeoffs.
+* A proof of concept that translates selected COBOL paragraphs into another language for human review.
+
+## Engagement approach
+
+I prefer small, useful milestones over vague large projects. A typical engagement looks like this:
+
+1. **Discovery** — confirm goals, constraints, sample inputs, security requirements, and success criteria.
+2. **Prototype** — build or adapt a narrow workflow against representative source files.
+3. **Review** — validate output with your subject-matter experts and adjust assumptions.
+4. **Production hardening** — add authentication, logging, deployment scripts, tests, and documentation as needed.
+5. **Handoff** — deliver source code, setup instructions, usage documentation, and a clear next-step roadmap.
+
+## Security and confidentiality
+
+Legacy source code can contain sensitive business logic, credentials, data formats, and operational procedures. Punchcard is designed with a conservative default posture:
+
+* No external LLM calls are made unless an API key is explicitly configured.
+* Proprietary source should not be sent to third-party AI services without written approval.
+* Client projects should define a redaction policy, retention policy, and audit process before using hosted AI models.
+* Local/offline workflows are preferred when confidentiality requirements are strict.
+
+## Technology snapshot
+
+Punchcard is built with pragmatic, maintainable tools:
+
+* **Python 3.12** for the backend and command-line tooling.
+* **FastAPI** for the review API.
+* **ANTLR-based COBOL parsing** for structured source analysis.
+* **Textual** for the terminal interface.
+* **React + Vite** for the web interface.
+* **Pytest and Ruff** for testing and code quality.
+
+## Running the project locally
+
+Developers can run Punchcard locally with [`uv`](https://docs.astral.sh/uv/):
 
 ```bash
 uv sync --dev
@@ -12,113 +98,55 @@ uv run pytest
 uv run punchcard fixtures/hello.cbl
 ```
 
-If you prefer a temporary shell:
+To start the terminal UI:
 
 ```bash
-uv venv --python 3.12
-source .venv/bin/activate
-uv pip install -e '.[dev]'
+uv run punchcard-tui --source program.cbl
 ```
 
-Lint with `uv run ruff check .`. The same checks (ruff, a compile check, and the
-test suite) run in CI on every pull request via `.github/workflows/ci.yml`.
+To build and serve the web UI:
 
-## LLM integration
-
-Translation goes through a small `LLMClient` seam (`punchcard/backend/llm/`):
-
-* By default `get_llm_client()` returns the offline `MockLLMClient`, so tests,
-  CI, and local runs never touch the network.
-* When `ANTHROPIC_API_KEY` is set (and the process is not under test), it returns
-  the real `AnthropicTranslationClient`, which calls Claude (`claude-opus-4-8`,
-  adaptive thinking) using the templates in `llm/prompts.py`.
-
-Each paragraph carries a structural **confidence score** from
-`llm/confidence.py` (GO TO, ALTER, external CALL, file I/O, and DATA DIVISION
-REDEFINES each subtract an explainable penalty; below 0.6 a paragraph is flagged
-`MANDATORY_REVIEW`) and a **cyclomatic complexity** estimate from
-`parser/complexity.py`.
-
-### Review API (FastAPI)
-
-```
-POST /sessions                                   # upload a .cbl/.cob file
-GET  /sessions/{id}                              # status + progress
-GET  /sessions/{id}/paragraphs                   # per-paragraph status, confidence, risk flags
-GET  /sessions/{id}/paragraphs/{name}            # one paragraph's source + translation
-POST /sessions/{id}/paragraphs/{name}/translate  # translate one paragraph
-POST /sessions/{id}/paragraphs/{name}/accept     # accept a rewrite
-POST /sessions/{id}/paragraphs/{name}/reject     # reject a rewrite
-GET  /sessions/{id}/export                       # translated output + JSON audit log
-GET  /sessions/{id}/export/file                  # download the assembled module
+```bash
+cd frontend
+npm install
+npm run build
+cd ..
+uv run punchcard-web
 ```
 
-### Review interfaces
-
-Two front-ends drive the same review workflow:
-
-* **Terminal UI** — `uv run punchcard-tui --source program.cbl` (Textual).
-* **Web UI** — a React + Vite app in `frontend/`. Build it (`cd frontend && npm install && npm run build`) and run `uv run punchcard-web` to serve the UI and API together; see `frontend/README.md` for the hot-reload dev workflow.
-
-## MVP architecture
-
-```mermaid
-flowchart LR
-    A[COBOL fixtures/files] --> B[Line parser now\nANTLR listener later]
-    B --> C[IR dataclasses]
-    C --> D[Review engine]
-    D --> E[LLM review helpers]
-    D --> F[FastAPI endpoints]
-    D --> G[Textual TUI]
-```
-
-### Package map
+## Project structure
 
 | Path | Purpose |
 | --- | --- |
-| `punchcard/backend/parser/` | COBOL parsing, IR models, and complexity scoring. |
-| `punchcard/backend/llm/` | Anthropic-backed translation client, prompt templates, and confidence scoring. |
-| `punchcard/backend/review/` | In-memory rewrite-review service shared by the API and TUI. |
-| `punchcard/backend/api/` | FastAPI boundary for services and UI clients. |
-| `punchcard/tui/` | Textual terminal UI. |
-| `frontend/` | React + Vite web UI (served by FastAPI once built). |
-| `fixtures/` | Small COBOL examples for repeatable parser work. |
-| `tests/` | Pytest suite. |
+| `punchcard/backend/parser/` | COBOL parsing, intermediate representation models, copybook handling, and complexity scoring. |
+| `punchcard/backend/llm/` | Optional LLM translation client, prompt templates, and confidence scoring. |
+| `punchcard/backend/review/` | Shared review service used by the API and terminal UI. |
+| `punchcard/backend/api/` | FastAPI endpoints for upload, review, translation, and export. |
+| `punchcard/tui/` | Terminal review interface. |
+| `frontend/` | Browser-based review interface. |
+| `fixtures/` | Small COBOL examples for repeatable parser and review tests. |
+| `tests/` | Automated test suite. |
 
-the architecture keeps arguments close to sources: parser nodes retain line numbers, and review output should cite the code it discusses.
+## Limitations
 
-## Parsing
+Punchcard is an active modernization workbench, not a magic one-click rewrite system. Important limitations include:
 
-COBOL is parsed with the [grammars-v4](https://github.com/antlr/grammars-v4/tree/master/cobol85)
-COBOL85 grammar via ANTLR (vendored under `parser/_generated/`, so no Java is
-needed at runtime). The parse tree is walked into a small structured IR: each
-statement records its verb, source span, and any nested statements (the bodies of
-`IF`/`EVALUATE` and inline `PERFORM`).
+* COBOL dialects vary widely, so real client code may require parser tuning.
+* Data declarations are retained for review but are not yet modeled as a full typed data-flow graph.
+* Control-flow analysis is useful but not a substitute for domain expert validation.
+* AI-generated explanations or rewrites must be reviewed by humans before use.
+* Production deployments should add client-specific authentication, authorization, logging, and data-retention controls.
 
-`COPY`/`REPLACE` are expanded first by a preprocessor (also ANTLR-grammar-based);
-copybooks are resolved from a search path:
+## Interested in working together?
 
-```bash
-uv run punchcard program.cbl --copybook-path ./copybooks
-```
+If you need help understanding, modernizing, or safely automating around legacy systems, I can help turn your source code and operational goals into a practical plan.
 
-Each procedure statement is recorded with its leading verb. The review path
-focuses on these verbs first:
+Useful starting points for a first message:
 
-| Verb | MVP status | Notes |
-| --- | --- | --- |
-| `DISPLAY` | Parsed | Captured as a statement with tokens and line number. |
-| `MOVE` | Parsed | Captured as a statement; semantic data-flow analysis is future work. |
-| `STOP` | Parsed | `STOP RUN.` is treated as a statement, not a paragraph. |
-| `PERFORM` | Recognized generically | Parsed when present, but no control-flow graph yet. |
-| `IF` | Recognized generically | Parsed when present, but multi-line block structure is not modeled yet. |
-| `READ` / `WRITE` | Recognized generically | Parsed when present; file metadata is not linked yet. |
-| `CALL` | Recognized generically | Parsed when present; external dependency inventory is future work. |
+* What language or system do you need reviewed?
+* How many programs, files, or lines of code are involved?
+* Are there copybooks, JCL, database schemas, or external integrations?
+* Do you need a report, a working tool, a migration plan, or implementation support?
+* Are there confidentiality or offline-only requirements?
 
-## Known limitations
-
-* `COPY` is expanded inline, so IR line numbers refer to the expanded source. Each copied line's originating copybook is tracked (`CobolProgram.copy_spans` / `origin_of`), except when a program-level `REPLACE`/listing directive shifts lines, in which case provenance is omitted.
-* `COPY ... REPLACING` / `REPLACE` substitution is word/pseudo-text based and does not implement the full COBOL token-matching rules.
-* DATA DIVISION entries are retained as raw lines and section names, not typed data declarations.
-* PROCEDURE DIVISION nesting captures block statements as nested children, but there is no full control-flow graph yet.
-* Security posture for API/LLM work: real translation only runs when `ANTHROPIC_API_KEY` is set (otherwise a local mock is used); never send proprietary COBOL to an external model without explicit user approval, redaction policy, and audit logging.
+I can start with a focused assessment and then scale into tooling, automation, or modernization support once the highest-value path is clear.
